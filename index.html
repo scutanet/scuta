@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>SCUTA.IO</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><radialGradient id='g' cx='35%25' cy='35%25'><stop offset='0%25' stop-color='%23a8ffd0'/><stop offset='55%25' stop-color='%2328d47a'/><stop offset='100%25' stop-color='%230a6b40'/></radialGradient></defs><circle cx='50' cy='50' r='46' fill='url(%23g)'/><circle cx='36' cy='40' r='9' fill='%23fff'/><circle cx='64' cy='40' r='9' fill='%23fff'/><circle cx='38' cy='41' r='4' fill='%23111'/><circle cx='66' cy='41' r='4' fill='%23111'/></svg>" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="menu" class="overlay">
+    <div class="menu-aura" aria-hidden="true"></div>
+    <div class="menu-panel">
+      <div class="logo-mark" aria-hidden="true">
+        <span class="logo-orb"></span>
+        <span class="logo-orb o2"></span>
+        <span class="logo-orb o3"></span>
+      </div>
+      <h1 class="logo">SCUTA<span>.IO</span></h1>
+      <p class="tagline">Slither. Conquer. Dominate.</p>
+      <label class="nick-wrap">
+        <span class="sr-only">Nickname</span>
+        <input id="nick" type="text" maxlength="16" placeholder="Enter nickname" autocomplete="off" spellcheck="false" />
+      </label>
+      <button id="play-btn" type="button"><span>Play</span></button>
+      <p class="hint">Mouse to steer · Hold click or Space to boost</p>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="score-box">
+      <div class="stat-row">
+        <span class="stat-label">Length</span>
+        <span class="stat-value" id="length">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Rank</span>
+        <span class="stat-value" id="rank">—</span>
+      </div>
+    </div>
+    <div id="leaderboard">
+      <div class="lb-title">Leaderboard</div>
+      <ol id="lb-list"></ol>
+    </div>
+    <canvas id="minimap" width="160" height="160"></canvas>
+    <button id="boost-btn" type="button" aria-label="Boost">Boost</button>
+  </div>
+
+  <div id="death" class="overlay hidden">
+    <div class="menu-panel death-panel">
+      <p class="death-kicker">Game over</p>
+      <h2>You died</h2>
+      <p class="death-stats">Final length <span id="final-length">0</span></p>
+      <button id="continue-btn" type="button"><span>Continue</span></button>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
