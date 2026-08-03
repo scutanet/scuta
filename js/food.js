@@ -6,6 +6,7 @@ import {
   randRange,
 } from "./utils.js";
 import { foodColor } from "./skins.js";
+import { randomFoodSprite } from "./food-sprites.js";
 
 export class FoodField {
   constructor() {
@@ -36,10 +37,14 @@ export class FoodField {
       x: pos.x,
       y: pos.y,
       value,
-      radius: radius ?? (2.2 + Math.random() * 2.2 + value * 0.35),
+      // Collision radius (visual size scales with the viewing snake's head)
+      radius: radius ?? (2.6 + Math.random() * 1.8 + value * 0.35),
       h: c.h,
       s: c.s,
       l: c.l,
+      sprite: opts?.sprite ?? randomFoodSprite(),
+      /** 0.85–1.15 variance so coins aren't perfectly uniform */
+      sizeMul: 0.85 + Math.random() * 0.3,
       pulse: Math.random() * Math.PI * 2,
       immuneId: opts?.immuneId ?? null,
       immuneUntil: opts?.immuneMs != null ? performance.now() + opts.immuneMs : 0,

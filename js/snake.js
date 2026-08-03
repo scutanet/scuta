@@ -2,6 +2,9 @@ import {
   BASE_SPEED,
   BOOST_COST_INTERVAL,
   BOOST_SPEED,
+  FOOD_MAGNET_BASE,
+  FOOD_MAGNET_PULL,
+  FOOD_MAGNET_RANGE,
   SEGMENT_SPACING,
   START_LENGTH,
   TURN_RATE,
@@ -94,15 +97,13 @@ export class Snake {
     let nx = head.x + Math.cos(this.angle) * speed;
     let ny = head.y + Math.sin(this.angle) * speed;
 
-    const d = Math.hypot(nx, ny);
-    const limit = WORLD_RADIUS - this.radius;
-    if (d > limit * 0.88) {
-      this.targetAngle = Math.atan2(-ny, -nx) + (Math.random() - 0.5) * 0.2;
-    }
-    if (d > limit) {
-      const s = limit / d;
-      nx *= s;
-      ny *= s;
+    // Bots steer inward near the rim; players die on contact (checked in Game)
+    if (!this.isPlayer) {
+      const d = Math.hypot(nx, ny);
+      const limit = WORLD_RADIUS - this.radius;
+      if (d > limit * 0.82) {
+        this.targetAngle = Math.atan2(-ny, -nx) + (Math.random() - 0.5) * 0.25;
+      }
     }
 
     this._moveBody(nx, ny);
@@ -142,10 +143,36 @@ export class Snake {
     }
   }
 
+  /** Pull nearby pellets toward the head (Slither-style food vacuum). */
+  attractFood(foodItems) {
+    const h = this.head;
+    const magnetR = this.radius * FOOD_MAGNET_RANGE + FOOD_MAGNET_BASE;
+    const magnetR2 = magnetR * magnetR;
+    const now = performance.now();
+    const pullBase = FOOD_MAGNET_PULL + this.radius * 0.12;
+
+    for (let i = 0; i < foodItems.length; i++) {
+      const f = foodItems[i];
+      if (f.immuneId === this.id && now < f.immuneUntil) continue;
+
+      const dx = h.x - f.x;
+      const dy = h.y - f.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= magnetR2 || d2 < 0.25) continue;
+
+      const d = Math.sqrt(d2);
+      // Stronger as it gets closer — vacuum / magnet feel
+      const t = 1 - d / magnetR;
+      const pull = pullBase * t * t * (1.15 + t);
+      f.x += (dx / d) * pull;
+      f.y += (dy / d) * pull;
+    }
+  }
+
   collectFood(foodItems) {
     const eaten = [];
     const h = this.head;
-    const eatR = this.radius + 5;
+    const eatR = this.radius + 6;
     const now = performance.now();
     for (let i = 0; i < foodItems.length; i++) {
       const f = foodItems[i];

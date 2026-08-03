@@ -1,14 +1,19 @@
 export const WORLD_RADIUS = 5000;
-export const FOOD_COUNT = 2200;
+export const FOOD_COUNT = 8800;
 export const BOT_COUNT = 28;
-export const BASE_SPEED = 3.6;
-export const BOOST_SPEED = 6.8;
+export const BASE_SPEED = 2.6;
+export const BOOST_SPEED = 4.8;
 export const TURN_RATE = 0.085;
 export const SEGMENT_SPACING = 6;
 export const START_LENGTH = 12;
 export const FOOD_VALUE = 1;
-export const BOOST_COST_INTERVAL = 2; // frames between mass loss / pellet drop while boosting
-export const MAX_FOOD = 3200;
+export const BOOST_COST_INTERVAL = 16; // frames between mass loss / pellet drop while boosting
+export const MAX_FOOD = 12800;
+/** How far food starts getting sucked toward a snake's head */
+export const FOOD_MAGNET_RANGE = 5.5; // × snake radius, plus FOOD_MAGNET_BASE
+export const FOOD_MAGNET_BASE = 26;
+/** Base pull speed (world units / frame) at point-blank; falls off with distance */
+export const FOOD_MAGNET_PULL = 2.8;
 
 export function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
