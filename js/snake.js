@@ -2,6 +2,8 @@ import {
   BASE_SPEED,
   BOOST_COST_INTERVAL,
   BOOST_SPEED,
+  BOT_SPEED_MUL,
+  BOT_TURN_MUL,
   FOOD_MAGNET_BASE,
   FOOD_MAGNET_PULL,
   FOOD_MAGNET_RANGE,
@@ -30,7 +32,7 @@ export class Snake {
     this.boosting = false;
     this.boostTimer = 0;
     this.mass = START_LENGTH;
-    this.radius = 8;
+    this.radius = 10;
     this.wantedFood = null;
     this.aiState = "wander";
     this.aiTimer = 0;
@@ -57,7 +59,8 @@ export class Snake {
   }
 
   _updateRadius() {
-    this.radius = clamp(8 + Math.sqrt(Math.max(0, this.mass - START_LENGTH)) * 0.55, 8, 42);
+    // Slightly plumper than classic Slither so neon coins read as a solid body
+    this.radius = clamp(10 + Math.sqrt(Math.max(0, this.mass - START_LENGTH)) * 0.62, 10, 46);
   }
 
   setTarget(wx, wy) {
@@ -89,11 +92,14 @@ export class Snake {
     this.prevHeadX = head.x;
     this.prevHeadY = head.y;
 
+    const speedMul = this.isPlayer ? 1 : BOT_SPEED_MUL;
+    const turnMul = this.isPlayer ? 1 : BOT_TURN_MUL;
+
     const diff = angleDiff(this.angle, this.targetAngle);
-    const maxTurn = TURN_RATE * (this.boosting ? 0.88 : 1) * dtFrames;
+    const maxTurn = TURN_RATE * turnMul * (this.boosting ? 0.88 : 1) * dtFrames;
     this.angle += clamp(diff, -maxTurn, maxTurn);
 
-    const speed = (this.boosting ? BOOST_SPEED : BASE_SPEED) * dtFrames;
+    const speed = (this.boosting ? BOOST_SPEED : BASE_SPEED) * speedMul * dtFrames;
     let nx = head.x + Math.cos(this.angle) * speed;
     let ny = head.y + Math.sin(this.angle) * speed;
 

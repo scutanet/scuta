@@ -22,8 +22,8 @@ export class FoodField {
 
   spawn(x, y, value = 1, color = null, radius = null, opts = null) {
     if (this.items.length >= MAX_FOOD) {
-      // Prefer trail pellets: free a random ambient pellet if needed
-      if (opts?.immuneId != null && this.items.length > 0) {
+      // Prefer trail / death-spill pellets: free a random ambient pellet if needed
+      if ((opts?.immuneId != null || opts?.evictAmbient) && this.items.length > 0) {
         const idx = Math.floor(Math.random() * Math.min(200, this.items.length));
         if (this.items[idx].immuneId == null) this.items.splice(idx, 1);
         else return null;
@@ -33,6 +33,7 @@ export class FoodField {
     }
     const pos = x != null ? { x, y } : randomInCircle(WORLD_RADIUS, 40);
     const c = color || foodColor();
+    const kind = opts?.kind ?? "map";
     const item = {
       x: pos.x,
       y: pos.y,
@@ -43,8 +44,10 @@ export class FoodField {
       s: c.s,
       l: c.l,
       sprite: opts?.sprite ?? randomFoodSprite(),
+      /** map = neon circuit, death = fruit candy, trail = boost crumbs */
+      kind,
       /** 0.85–1.15 variance so coins aren't perfectly uniform */
-      sizeMul: 0.85 + Math.random() * 0.3,
+      sizeMul: opts?.sizeMul ?? (kind === "death" ? 1.15 + Math.random() * 0.35 : 0.85 + Math.random() * 0.3),
       pulse: Math.random() * Math.PI * 2,
       immuneId: opts?.immuneId ?? null,
       immuneUntil: opts?.immuneMs != null ? performance.now() + opts.immuneMs : 0,
@@ -53,19 +56,31 @@ export class FoodField {
     return item;
   }
 
-  /** Scatter food when a snake dies */
+  /** Scatter fruit-candy loot equal to the snake's exact mass at death. */
   spillFromSnake(snake) {
-    const step = Math.max(1, Math.floor(snake.segments.length / 40));
-    for (let i = 0; i < snake.segments.length; i += step) {
-      const seg = snake.segments[i];
+    const total = snake.mass;
+    const segs = snake.segments;
+    if (!(total > 0) || !segs.length) return;
+
+    // Spread mass along the body; cap count for performance / field capacity
+    const count = Math.max(1, Math.min(segs.length, 500, Math.round(total / 3)));
+    const step = segs.length / count;
+    let remaining = total;
+
+    for (let i = 0; i < count; i++) {
+      const seg = segs[Math.min(segs.length - 1, Math.floor(i * step))];
+      const left = count - i;
+      const value = remaining / left;
       const jitter = 14;
-      this.spawn(
+      const item = this.spawn(
         seg.x + randRange(-jitter, jitter),
         seg.y + randRange(-jitter, jitter),
-        2 + Math.random() * 2,
+        value,
         foodColor(),
-        3.5 + Math.random() * 3
+        3.5 + Math.random() * 3,
+        { kind: "death", evictAmbient: true }
       );
+      if (item) remaining -= value;
     }
   }
 
@@ -97,7 +112,7 @@ export class FoodField {
         1,
         { h: hueFromHex(snake.skin.colors[i % snake.skin.colors.length]), s: 75, l: 58 },
         2.8 + Math.random() * 1.4,
-        { immuneId: snake.id, immuneMs: 900 }
+        { kind: "trail", immuneId: snake.id, immuneMs: 900, sizeMul: 0.7 + Math.random() * 0.2 }
       );
     }
   }

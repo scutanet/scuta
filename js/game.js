@@ -32,12 +32,14 @@ export class Game {
   }
 
   start(nickname, opts = {}) {
-    const { skin = null, mode = "ai" } = opts;
+    const { skin = null, mode = "ai", serverSession = null } = opts;
     this.snakes = [];
     this.food = new FoodField();
     this._namesUsed.clear();
     this.mode = mode;
     this.spectateTarget = null;
+    /** @type {{ serverId: string, buyIn: number, startingValue: number, joinedAt: number } | null} */
+    this.serverSession = serverSession;
 
     if (mode !== "spectate") {
       this.player = new Snake({

@@ -4,7 +4,11 @@ export const BOT_COUNT = 28;
 export const BASE_SPEED = 2.6;
 export const BOOST_SPEED = 4.8;
 export const TURN_RATE = 0.085;
-export const SEGMENT_SPACING = 6;
+/** Bots move/turn slower than the player so they are easier to cut off */
+export const BOT_SPEED_MUL = 0.72;
+export const BOT_TURN_MUL = 0.65;
+/** Dense overlap so thick coin discs blend into a continuous body. */
+export const SEGMENT_SPACING = 5;
 export const START_LENGTH = 12;
 export const FOOD_VALUE = 1;
 export const BOOST_COST_INTERVAL = 16; // frames between mass loss / pellet drop while boosting
