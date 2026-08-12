@@ -1,4 +1,4 @@
-import { WORLD_RADIUS, hsl, shadeColor } from "./utils.js";
+import { WORLD_RADIUS, LOD, hsl, shadeColor } from "./utils.js";
 import { getCoinSprite, getFoodSprite, loadFoodSprites } from "./food-sprites.js";
 import { CIRCUIT_ACCENT } from "./skins.js";
 
@@ -98,6 +98,37 @@ export class Renderer {
     };
   }
 
+  /** Camera viewport in world units, plus LOD.VIEW_MARGIN. */
+  _viewBounds() {
+    const hw = this.viewW / (2 * this.cam.zoom) + LOD.VIEW_MARGIN;
+    const hh = this.viewH / (2 * this.cam.zoom) + LOD.VIEW_MARGIN;
+    return {
+      minX: this.cam.x - hw,
+      maxX: this.cam.x + hw,
+      minY: this.cam.y - hh,
+      maxY: this.cam.y + hh,
+    };
+  }
+
+  /**
+   * LOD tier from camera distance (world units).
+   * @returns {{ step: number, detail: boolean, effects: boolean, dist: number }}
+   */
+  _lodFor(x, y) {
+    const dist = Math.hypot(x - this.cam.x, y - this.cam.y);
+    if (dist < LOD.NEAR) {
+      return { step: LOD.NEAR_STEP, detail: true, effects: true, dist };
+    }
+    if (dist < LOD.MID) {
+      return { step: LOD.MID_STEP, detail: false, effects: true, dist };
+    }
+    return { step: LOD.FAR_STEP, detail: false, effects: false, dist };
+  }
+
+  _boundsVisible(b, view) {
+    return !(b.maxX < view.minX || b.minX > view.maxX || b.maxY < view.minY || b.minY > view.maxY);
+  }
+
   render(game) {
     this.time += 0.016;
     const ctx = this.ctx;
@@ -111,13 +142,63 @@ export class Renderer {
     ctx.translate(-this.cam.x, -this.cam.y);
 
     this._drawArena(ctx);
+    this._drawCashOutZones(ctx, game);
     this._drawFood(ctx, game.food.items, game);
     this._updateParticles(game);
     this._drawParticles(ctx);
     this._drawSnakes(ctx, game.snakes, game);
+    this._drawCashOutProgress(ctx, game);
 
     ctx.restore();
     this._drawMinimap(game);
+  }
+
+  /** Filled semi-transparent teal cash-out discs with a brighter outline. */
+  _drawCashOutZones(ctx, game) {
+    const zones = game.cashOutZones;
+    if (!zones?.length) return;
+
+    for (const z of zones) {
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.radius, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(32, 196, 180, 0.18)";
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(80, 255, 230, 0.85)";
+      ctx.lineWidth = 10;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(180, 255, 245, 0.55)";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  }
+
+  /** Radial dwell ring around the player's head while inside a zone. */
+  _drawCashOutProgress(ctx, game) {
+    const snake = game.player;
+    if (!snake?.alive || !(snake.cashOutProgress > 0)) return;
+
+    const h = snake.head;
+    const r = snake.radius + 14;
+    const prog = Math.min(1, snake.cashOutProgress);
+
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 5;
+    ctx.arc(h.x, h.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(90, 255, 230, 0.95)";
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.arc(h.x, h.y, r, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
+    ctx.stroke();
   }
 
   _drawArena(ctx) {
@@ -141,22 +222,30 @@ export class Renderer {
   }
 
   _drawFood(ctx, items, game) {
-    const viewPad = Math.max(this.viewW, this.viewH) / this.cam.zoom * 0.58;
-    const cx = this.cam.x;
-    const cy = this.cam.y;
-    // Scale coins to ~55% of the viewing snake's head diameter (never near 2×)
+    const view = this._viewBounds();
     const headR = game?.player?.alive
       ? game.player.radius
       : (game?.snakes?.find((s) => s.alive)?.radius ?? 10);
 
-    for (let i = 0; i < items.length; i++) {
-      const f = items[i];
-      if (Math.abs(f.x - cx) > viewPad || Math.abs(f.y - cy) > viewPad) continue;
+    // Prefer spatial query; fall back to full scan if grid missing / cull off
+    let list = items;
+    if (game?.flags?.cull !== false && game?.foodGrid) {
+      list = game.foodGrid.queryRect(view.minX, view.minY, view.maxX, view.maxY, this._foodVis || (this._foodVis = []));
+    }
+
+    const seen = new Set();
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (seen.has(f)) continue;
+      seen.add(f);
+      if (f.x < view.minX || f.x > view.maxX || f.y < view.minY || f.y > view.maxY) continue;
 
       const kind = f.kind ?? "map";
       const isDeath = kind === "death";
+      const isCenter = f.ring === "center";
       const pulse = 1 + Math.sin(this.time * (isDeath ? 3.2 : 2.4) + f.pulse) * (isDeath ? 0.1 : 0.06);
       const mul = f.sizeMul ?? 1;
+      const bright = f.brightness ?? (isCenter ? 1.28 : 1);
       // Diameter ≈ 2.2 × head radius ≈ 1.1 × head diameter
       const size = headR * 2.2 * mul * pulse;
       const img = getFoodSprite(f.sprite ?? 0, kind === "death" ? "death" : "map");
@@ -173,8 +262,25 @@ export class Renderer {
           ctx.fillStyle = g;
           ctx.arc(f.x, f.y, glowR, 0, Math.PI * 2);
           ctx.fill();
+        } else if (isCenter) {
+          const glowR = size * 0.62;
+          const g = ctx.createRadialGradient(f.x, f.y, size * 0.12, f.x, f.y, glowR);
+          g.addColorStop(0, "rgba(200, 255, 255, 0.32)");
+          g.addColorStop(0.5, "rgba(120, 230, 255, 0.12)");
+          g.addColorStop(1, "rgba(80, 200, 255, 0)");
+          ctx.beginPath();
+          ctx.fillStyle = g;
+          ctx.arc(f.x, f.y, glowR, 0, Math.PI * 2);
+          ctx.fill();
         }
-        ctx.drawImage(img, f.x - size * 0.5, f.y - size * 0.5, size, size);
+        if (bright !== 1) {
+          ctx.save();
+          ctx.globalAlpha = Math.min(1, 0.75 + bright * 0.2);
+          ctx.drawImage(img, f.x - size * 0.5, f.y - size * 0.5, size, size);
+          ctx.restore();
+        } else {
+          ctx.drawImage(img, f.x - size * 0.5, f.y - size * 0.5, size, size);
+        }
         continue;
       }
 
@@ -205,9 +311,13 @@ export class Renderer {
 
     if (this.particles.length > 180) this.particles.length = 180;
 
+    const cx = this.cam.x;
+    const cy = this.cam.y;
     for (const snake of game.snakes) {
       if (!snake.alive || !snake.boosting) continue;
       const h = snake.head;
+      // Skip particle spawn beyond LOD effects threshold
+      if (game?.flags?.lod !== false && Math.hypot(h.x - cx, h.y - cy) >= LOD.MID) continue;
       const ang = snake.angle + Math.PI;
       const c = snake.skin.colors[0];
       for (let n = 0; n < 2; n++) {
@@ -237,8 +347,18 @@ export class Renderer {
   }
 
   _drawSnakes(ctx, snakes, game) {
-    const sorted = [...snakes].filter((s) => s.alive).sort((a, b) => a.mass - b.mass);
-    for (const snake of sorted) this._drawSnake(ctx, snake, game);
+    const view = this._viewBounds();
+    const useCull = game?.flags?.cull !== false;
+    const sorted = [];
+    for (let i = 0; i < snakes.length; i++) {
+      const s = snakes[i];
+      if (!s.alive) continue;
+      // Fully outside viewport — skip without iterating segments
+      if (useCull && s.bounds && !this._boundsVisible(s.bounds, view)) continue;
+      sorted.push(s);
+    }
+    sorted.sort((a, b) => a.mass - b.mass);
+    for (const snake of sorted) this._drawSnake(ctx, snake, game, view);
   }
 
   _drawSegment(ctx, x, y, r, color) {
@@ -397,7 +517,7 @@ export class Renderer {
     ctx.restore();
   }
 
-  _drawSnake(ctx, snake, game) {
+  _drawSnake(ctx, snake, game, view = null) {
     const segs = snake.segments;
     if (segs.length < 2) return;
 
@@ -405,12 +525,17 @@ export class Renderer {
     const coins = snake.skin.coins || [];
     const style = snake.skin.style || "coin";
     const r = snake.radius;
-    const viewPad = Math.max(this.viewW, this.viewH) / this.cam.zoom * 0.65;
     const cx = this.cam.x;
     const cy = this.cam.y;
-    const hq = snake.isPlayer || Math.hypot(snake.head.x - cx, snake.head.y - cy) < 750;
+    const viewPad = Math.max(this.viewW, this.viewH) / this.cam.zoom * 0.65;
+    const lodEnabled = game?.flags?.lod !== false;
+    const lod = snake.isPlayer || !lodEnabled
+      ? { step: LOD.NEAR_STEP, detail: true, effects: true, dist: 0 }
+      : this._lodFor(snake.head.x, snake.head.y);
+    const hq = lod.detail;
+    const step = lod.step;
 
-    if (snake.boosting) {
+    if (snake.boosting && lod.effects) {
       const head = segs[0];
       const glow = ctx.createRadialGradient(head.x, head.y, r * 0.2, head.x, head.y, r * 2.2);
       glow.addColorStop(0, "rgba(255,255,255,0.16)");
@@ -431,13 +556,10 @@ export class Renderer {
         ember: this._drawEmberSnake,
         strike: this._drawStrikeSnake,
       }[style];
-      drawer.call(this, ctx, snake, game, hq, viewPad, cx, cy);
+      drawer.call(this, ctx, snake, game, hq, viewPad, cx, cy, lod);
       return;
     }
 
-    // Never skip segments on the focused snake — stepping by 2 with striped
-    // skins flips the whole body between colors whenever length parity changes.
-    const step = hq ? 1 : segs.length > 80 ? 2 : 1;
     const coinLen = coins.length || 1;
 
     for (let i = segs.length - 1; i >= 1; i -= step) {
@@ -455,16 +577,17 @@ export class Renderer {
     const head = segs[0];
     const headR = r * 1.06;
     this._drawPlatinumHead(ctx, head.x, head.y, headR, snake.angle);
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (lod.detail) this._drawEyes(ctx, snake, game, headR);
+    if (lod.detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   /** Continuous glass circuit tube + upright obsidian head. */
-  _drawCircuitSnake(ctx, snake, game, hq, viewPad, cx, cy) {
+  _drawCircuitSnake(ctx, snake, game, hq, viewPad, cx, cy, lod = null) {
     const segs = snake.segments;
     const r = snake.radius;
     const headR = r * 1.08;
-    const step = hq ? 1 : segs.length > 100 ? 2 : 1;
+    const step = lod?.step ?? (hq ? 1 : segs.length > 100 ? 2 : 1);
+    const detail = lod ? lod.detail : hq;
 
     ctx.save();
     ctx.lineCap = "round";
@@ -488,13 +611,15 @@ export class Renderer {
     }
 
     if (started) {
-      ctx.strokeStyle = "rgba(93,255,200,0.12)";
-      ctx.lineWidth = r * 2.35;
-      ctx.stroke();
+      if (detail) {
+        ctx.strokeStyle = "rgba(93,255,200,0.12)";
+        ctx.lineWidth = r * 2.35;
+        ctx.stroke();
 
-      ctx.strokeStyle = "rgba(197,208,226,0.22)";
-      ctx.lineWidth = r * 2.12;
-      ctx.stroke();
+        ctx.strokeStyle = "rgba(197,208,226,0.22)";
+        ctx.lineWidth = r * 2.12;
+        ctx.stroke();
+      }
 
       ctx.strokeStyle = "rgba(106,115,136,0.55)";
       ctx.lineWidth = r * 2.02;
@@ -510,54 +635,56 @@ export class Renderer {
     }
     ctx.restore();
 
-    // Sparse teal circuit ticks along the body (skip near head)
-    const tickEvery = Math.max(4, Math.round(10 / step));
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.strokeStyle = CIRCUIT_ACCENT;
-    ctx.fillStyle = CIRCUIT_ACCENT;
-    for (let i = segs.length - 1; i > 3; i -= tickEvery) {
-      const s = segs[i];
-      if (Math.abs(s.x - cx) > viewPad || Math.abs(s.y - cy) > viewPad) continue;
-      const next = segs[Math.max(0, i - 1)];
-      const dx = next.x - s.x;
-      const dy = next.y - s.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const tx = dx / len;
-      const ty = dy / len;
-      const px = -ty;
-      const py = tx;
-      const run = r * 0.55;
-      const x2 = s.x + tx * run;
-      const y2 = s.y + ty * run;
-      ctx.globalAlpha = 0.7;
-      ctx.lineWidth = Math.max(1, r * 0.07);
-      ctx.beginPath();
-      ctx.moveTo(s.x - tx * run * 0.15, s.y - ty * run * 0.15);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      ctx.globalAlpha = 0.85;
-      ctx.beginPath();
-      ctx.arc(x2, y2, Math.max(0.9, r * 0.08), 0, Math.PI * 2);
-      ctx.fill();
-      if ((i / tickEvery) % 2 < 1) {
-        const bx = s.x + px * r * 0.28;
-        const by = s.y + py * r * 0.28;
-        ctx.globalAlpha = 0.45;
-        ctx.lineWidth = Math.max(0.8, r * 0.055);
+    // Sparse teal circuit ticks along the body (skip near head / distant)
+    if (detail) {
+      const tickEvery = Math.max(4, Math.round(10 / step));
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.strokeStyle = CIRCUIT_ACCENT;
+      ctx.fillStyle = CIRCUIT_ACCENT;
+      for (let i = segs.length - 1; i > 3; i -= tickEvery) {
+        const s = segs[i];
+        if (Math.abs(s.x - cx) > viewPad || Math.abs(s.y - cy) > viewPad) continue;
+        const next = segs[Math.max(0, i - 1)];
+        const dx = next.x - s.x;
+        const dy = next.y - s.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const tx = dx / len;
+        const ty = dy / len;
+        const px = -ty;
+        const py = tx;
+        const run = r * 0.55;
+        const x2 = s.x + tx * run;
+        const y2 = s.y + ty * run;
+        ctx.globalAlpha = 0.7;
+        ctx.lineWidth = Math.max(1, r * 0.07);
         ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
-        ctx.lineTo(bx, by);
+        ctx.moveTo(s.x - tx * run * 0.15, s.y - ty * run * 0.15);
+        ctx.lineTo(x2, y2);
         ctx.stroke();
-        ctx.globalAlpha = 0.8;
-        ctx.fillStyle = "#e8fff8";
+        ctx.globalAlpha = 0.85;
         ctx.beginPath();
-        ctx.arc(bx, by, Math.max(0.7, r * 0.06), 0, Math.PI * 2);
+        ctx.arc(x2, y2, Math.max(0.9, r * 0.08), 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = CIRCUIT_ACCENT;
+        if ((i / tickEvery) % 2 < 1) {
+          const bx = s.x + px * r * 0.28;
+          const by = s.y + py * r * 0.28;
+          ctx.globalAlpha = 0.45;
+          ctx.lineWidth = Math.max(0.8, r * 0.055);
+          ctx.beginPath();
+          ctx.moveTo(s.x, s.y);
+          ctx.lineTo(bx, by);
+          ctx.stroke();
+          ctx.globalAlpha = 0.8;
+          ctx.fillStyle = "#e8fff8";
+          ctx.beginPath();
+          ctx.arc(bx, by, Math.max(0.7, r * 0.06), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = CIRCUIT_ACCENT;
+        }
       }
+      ctx.restore();
     }
-    ctx.restore();
 
     const head = segs[0];
     // Obsidian orb stays upright; pupils track in _drawEyes
@@ -567,17 +694,18 @@ export class Renderer {
     } else {
       this._drawPlatinumHead(ctx, head.x, head.y, headR, snake.angle);
     }
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (detail) this._drawEyes(ctx, snake, game, headR);
+    if (detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   /** Hex ledger plates — blockchain block stack silhouette. */
-  _drawBlockweaveSnake(ctx, snake, game, hq, viewPad, cx, cy) {
+  _drawBlockweaveSnake(ctx, snake, game, hq, viewPad, cx, cy, lod = null) {
     const segs = snake.segments;
     const r = snake.radius;
     const accent = snake.skin.colors?.[0] || "#e8b84a";
     const headR = r * 1.08;
-    const step = hq ? 1 : segs.length > 90 ? 2 : 1;
+    const step = lod?.step ?? (hq ? 1 : segs.length > 90 ? 2 : 1);
+    const detail = lod ? lod.detail : hq;
 
     for (let i = segs.length - 1; i >= 1; i -= step) {
       const s = segs[i];
@@ -586,13 +714,13 @@ export class Renderer {
       const ang = Math.atan2(next.y - s.y, next.x - s.x);
       const taper = i > segs.length - 10 ? 0.86 + ((segs.length - i) / 10) * 0.14 : 1;
       const sr = r * taper;
-      this._drawHexPlate(ctx, s.x, s.y, sr, ang, accent, hq);
+      this._drawHexPlate(ctx, s.x, s.y, sr, ang, accent, detail);
     }
 
     const head = segs[0];
     this._drawHexHead(ctx, head.x, head.y, headR, snake.angle, accent);
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (detail) this._drawEyes(ctx, snake, game, headR);
+    if (detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   _drawHexPlate(ctx, x, y, r, ang, accent, hq) {
@@ -670,12 +798,13 @@ export class Renderer {
   }
 
   /** Concentric signal rings — network beacon silhouette. */
-  _drawPulseSnake(ctx, snake, game, hq, viewPad, cx, cy) {
+  _drawPulseSnake(ctx, snake, game, hq, viewPad, cx, cy, lod = null) {
     const segs = snake.segments;
     const r = snake.radius;
     const accent = snake.skin.colors?.[0] || "#2ef0ff";
     const headR = r * 1.06;
-    const step = hq ? 1 : segs.length > 90 ? 2 : 1;
+    const step = lod?.step ?? (hq ? 1 : segs.length > 90 ? 2 : 1);
+    const detail = lod ? lod.detail : hq;
 
     // Thin spine under the rings
     ctx.save();
@@ -703,7 +832,7 @@ export class Renderer {
     }
     ctx.restore();
 
-    const ringEvery = hq ? 2 : 3;
+    const ringEvery = detail ? 2 : Math.max(3, step + 1);
     for (let i = segs.length - 1; i >= 1; i -= ringEvery) {
       const s = segs[i];
       if (Math.abs(s.x - cx) > viewPad || Math.abs(s.y - cy) > viewPad) continue;
@@ -715,7 +844,7 @@ export class Renderer {
       ctx.globalAlpha = 0.85;
       ctx.arc(s.x, s.y, sr * 0.92, 0, Math.PI * 2);
       ctx.stroke();
-      if (hq) {
+      if (detail) {
         ctx.beginPath();
         ctx.strokeStyle = `${accent}44`;
         ctx.lineWidth = Math.max(0.7, sr * 0.05);
@@ -732,8 +861,8 @@ export class Renderer {
 
     const head = segs[0];
     this._drawPulseHead(ctx, head.x, head.y, headR, snake.angle, accent);
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (detail) this._drawEyes(ctx, snake, game, headR);
+    if (detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   _drawPulseHead(ctx, x, y, r, angle, accent) {
@@ -765,12 +894,13 @@ export class Renderer {
   }
 
   /** Faceted crystal diamonds — gem / vault silhouette. */
-  _drawPrismSnake(ctx, snake, game, hq, viewPad, cx, cy) {
+  _drawPrismSnake(ctx, snake, game, hq, viewPad, cx, cy, lod = null) {
     const segs = snake.segments;
     const r = snake.radius;
     const accent = snake.skin.colors?.[0] || "#c45cff";
     const headR = r * 1.08;
-    const step = hq ? 1 : segs.length > 90 ? 2 : 1;
+    const step = lod?.step ?? (hq ? 1 : segs.length > 90 ? 2 : 1);
+    const detail = lod ? lod.detail : hq;
 
     for (let i = segs.length - 1; i >= 1; i -= step) {
       const s = segs[i];
@@ -779,13 +909,13 @@ export class Renderer {
       const ang = Math.atan2(next.y - s.y, next.x - s.x);
       const taper = i > segs.length - 10 ? 0.86 + ((segs.length - i) / 10) * 0.14 : 1;
       const sr = r * taper;
-      this._drawPrismFacet(ctx, s.x, s.y, sr, ang + (i % 2) * 0.12, accent, hq);
+      this._drawPrismFacet(ctx, s.x, s.y, sr, ang + (i % 2) * 0.12, accent, detail);
     }
 
     const head = segs[0];
     this._drawPrismHead(ctx, head.x, head.y, headR, snake.angle, accent);
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (detail) this._drawEyes(ctx, snake, game, headR);
+    if (detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   _drawPrismFacet(ctx, x, y, r, ang, accent, hq) {
@@ -859,12 +989,13 @@ export class Renderer {
   }
 
   /** Molten core tube — volatility / forge heat. */
-  _drawEmberSnake(ctx, snake, game, hq, viewPad, cx, cy) {
+  _drawEmberSnake(ctx, snake, game, hq, viewPad, cx, cy, lod = null) {
     const segs = snake.segments;
     const r = snake.radius;
     const accent = snake.skin.colors?.[0] || "#ff6a2a";
     const headR = r * 1.08;
-    const step = hq ? 1 : segs.length > 100 ? 2 : 1;
+    const step = lod?.step ?? (hq ? 1 : segs.length > 100 ? 2 : 1);
+    const detail = lod ? lod.detail : hq;
 
     ctx.save();
     ctx.lineCap = "round";
@@ -882,9 +1013,11 @@ export class Renderer {
     }
     if (step > 1) ctx.lineTo(segs[0].x, segs[0].y);
     if (started) {
-      ctx.strokeStyle = `${accent}22`;
-      ctx.lineWidth = r * 2.45;
-      ctx.stroke();
+      if (detail) {
+        ctx.strokeStyle = `${accent}22`;
+        ctx.lineWidth = r * 2.45;
+        ctx.stroke();
+      }
       ctx.strokeStyle = "#1a0c08";
       ctx.lineWidth = r * 2.05;
       ctx.stroke();
@@ -895,42 +1028,46 @@ export class Renderer {
       ctx.globalAlpha = 0.55;
       ctx.lineWidth = r * 0.72;
       ctx.stroke();
-      ctx.globalAlpha = 0.9;
-      ctx.strokeStyle = "#ffd0a0";
-      ctx.lineWidth = r * 0.28;
-      ctx.stroke();
+      if (detail) {
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = "#ffd0a0";
+        ctx.lineWidth = r * 0.28;
+        ctx.stroke();
+      }
       ctx.globalAlpha = 1;
     }
     ctx.restore();
 
     // Ember sparks along the spine
-    const sparkEvery = Math.max(5, Math.round(12 / step));
-    ctx.save();
-    for (let i = segs.length - 1; i > 4; i -= sparkEvery) {
-      const s = segs[i];
-      if (Math.abs(s.x - cx) > viewPad || Math.abs(s.y - cy) > viewPad) continue;
-      const next = segs[Math.max(0, i - 1)];
-      const dx = next.x - s.x;
-      const dy = next.y - s.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const px = -dy / len;
-      const py = dx / len;
-      const side = (i / sparkEvery) % 2 < 1 ? 1 : -1;
-      const bx = s.x + px * r * 0.42 * side;
-      const by = s.y + py * r * 0.42 * side;
-      ctx.beginPath();
-      ctx.fillStyle = accent;
-      ctx.globalAlpha = 0.75;
-      ctx.arc(bx, by, Math.max(0.8, r * 0.07), 0, Math.PI * 2);
-      ctx.fill();
+    if (detail) {
+      const sparkEvery = Math.max(5, Math.round(12 / step));
+      ctx.save();
+      for (let i = segs.length - 1; i > 4; i -= sparkEvery) {
+        const s = segs[i];
+        if (Math.abs(s.x - cx) > viewPad || Math.abs(s.y - cy) > viewPad) continue;
+        const next = segs[Math.max(0, i - 1)];
+        const dx = next.x - s.x;
+        const dy = next.y - s.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const px = -dy / len;
+        const py = dx / len;
+        const side = (i / sparkEvery) % 2 < 1 ? 1 : -1;
+        const bx = s.x + px * r * 0.42 * side;
+        const by = s.y + py * r * 0.42 * side;
+        ctx.beginPath();
+        ctx.fillStyle = accent;
+        ctx.globalAlpha = 0.75;
+        ctx.arc(bx, by, Math.max(0.8, r * 0.07), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
     }
-    ctx.globalAlpha = 1;
-    ctx.restore();
 
     const head = segs[0];
     this._drawEmberHead(ctx, head.x, head.y, headR, snake.angle, accent);
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (detail) this._drawEyes(ctx, snake, game, headR);
+    if (detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   _drawEmberHead(ctx, x, y, r, angle, accent) {
@@ -972,12 +1109,13 @@ export class Renderer {
   }
 
   /** Chevron arrow plates — aggressive strike vector. */
-  _drawStrikeSnake(ctx, snake, game, hq, viewPad, cx, cy) {
+  _drawStrikeSnake(ctx, snake, game, hq, viewPad, cx, cy, lod = null) {
     const segs = snake.segments;
     const r = snake.radius;
     const accent = snake.skin.colors?.[0] || "#ff3d7a";
     const headR = r * 1.1;
-    const step = hq ? 1 : segs.length > 90 ? 2 : 1;
+    const step = lod?.step ?? (hq ? 1 : segs.length > 90 ? 2 : 1);
+    const detail = lod ? lod.detail : hq;
 
     for (let i = segs.length - 1; i >= 1; i -= step) {
       const s = segs[i];
@@ -986,13 +1124,13 @@ export class Renderer {
       const ang = Math.atan2(next.y - s.y, next.x - s.x);
       const taper = i > segs.length - 10 ? 0.85 + ((segs.length - i) / 10) * 0.15 : 1;
       const sr = r * taper;
-      this._drawChevronPlate(ctx, s.x, s.y, sr, ang, accent, hq);
+      this._drawChevronPlate(ctx, s.x, s.y, sr, ang, accent, detail);
     }
 
     const head = segs[0];
     this._drawStrikeHead(ctx, head.x, head.y, headR, snake.angle, accent);
-    this._drawEyes(ctx, snake, game, headR);
-    this._drawNameplate(ctx, snake);
+    if (detail) this._drawEyes(ctx, snake, game, headR);
+    if (detail || snake.isPlayer) this._drawNameplate(ctx, snake);
   }
 
   _drawChevronPlate(ctx, x, y, r, ang, accent, hq) {
@@ -1194,6 +1332,9 @@ export class Renderer {
     // Liquidity / death food (cached)
     this._drawMinimapLiquidity(game);
 
+    // Cash-out zones — filled dots, same world proportion as arena discs
+    this._drawMinimapCashOutZones(ctx, game, cx, cy, scale);
+
     // Rival snakes — thick white worms with clear heads
     this._drawMinimapSnakes(ctx, game, cx, cy, scale);
 
@@ -1214,6 +1355,26 @@ export class Renderer {
     // Player marker drawn last (above rim) so you always find yourself
     if (game.player && game.player.alive) {
       this._drawMinimapPlayer(ctx, game.player, cx, cy, R, scale, t);
+    }
+  }
+
+  _drawMinimapCashOutZones(ctx, game, cx, cy, scale) {
+    const zones = game.cashOutZones;
+    if (!zones?.length) return;
+
+    for (const z of zones) {
+      const mx = cx + z.x * scale;
+      const my = cy + z.y * scale;
+      const mr = z.radius * scale;
+      ctx.beginPath();
+      ctx.fillStyle = "rgba(32, 196, 180, 0.55)";
+      ctx.arc(mx, my, mr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(120, 255, 235, 0.95)";
+      ctx.lineWidth = 1.25;
+      ctx.arc(mx, my, mr, 0, Math.PI * 2);
+      ctx.stroke();
     }
   }
 

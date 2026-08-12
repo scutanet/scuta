@@ -20,8 +20,12 @@ import { randomSkin } from "./skins.js";
 
 let nextId = 1;
 
+/** Shared scratch buffers to avoid allocs in hot paths. */
+const _segQuery = [];
+const _foodQuery = [];
+
 export class Snake {
-  constructor({ name, x, y, isPlayer = false, skin = null }) {
+  constructor({ name, x, y, isPlayer = false, skin = null, carriedValue = 0 } = {}) {
     this.id = nextId++;
     this.name = name || "snake";
     this.isPlayer = isPlayer;
@@ -33,11 +37,21 @@ export class Snake {
     this.boostTimer = 0;
     this.mass = START_LENGTH;
     this.radius = 10;
+    /** Monetary value carried — fully separate from mass. */
+    this.carriedValue = Number(carriedValue) || 0;
     this.wantedFood = null;
     this.aiState = "wander";
     this.aiTimer = 0;
+    /** Rotating AI schedule slot (set by Game). */
+    this.aiPhase = 0;
     this.prevHeadX = null;
     this.prevHeadY = null;
+    /** Accumulated dwell time inside a cash-out zone (ms). */
+    this.cashOutMs = 0;
+    /** 0–1 progress toward completing a cash-out. */
+    this.cashOutProgress = 0;
+    /** Axis-aligned body bounds (updated when spatial grid is rebuilt). */
+    this.bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
     const start = x != null ? { x, y } : randomInCircle(WORLD_RADIUS * 0.7);
     this.segments = [];
@@ -48,6 +62,7 @@ export class Snake {
       });
     }
     this._updateRadius();
+    this._updateBounds();
   }
 
   get length() {
@@ -61,6 +76,26 @@ export class Snake {
   _updateRadius() {
     // Slightly plumper than classic Slither so neon coins read as a solid body
     this.radius = clamp(10 + Math.sqrt(Math.max(0, this.mass - START_LENGTH)) * 0.62, 10, 46);
+  }
+
+  _updateBounds() {
+    const segs = this.segments;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      if (s.x < minX) minX = s.x;
+      if (s.y < minY) minY = s.y;
+      if (s.x > maxX) maxX = s.x;
+      if (s.y > maxY) maxY = s.y;
+    }
+    const pad = this.radius;
+    this.bounds.minX = minX - pad;
+    this.bounds.minY = minY - pad;
+    this.bounds.maxX = maxX + pad;
+    this.bounds.maxY = maxY + pad;
   }
 
   setTarget(wx, wy) {
@@ -86,7 +121,7 @@ export class Snake {
   }
 
   update(dtFrames = 1) {
-    if (!this.alive) return { droppedFood: false };
+    if (!this.alive) return { droppedFood: false, burnedValue: 0, burnedMass: 0 };
 
     const head = this.segments[0];
     this.prevHeadX = head.x;
@@ -115,10 +150,19 @@ export class Snake {
     this._moveBody(nx, ny);
 
     let droppedFood = false;
+    let burnedValue = 0;
+    let burnedMass = 0;
     if (this.boosting && this.mass > START_LENGTH + 2) {
       this.boostTimer += dtFrames;
       if (this.boostTimer >= BOOST_COST_INTERVAL) {
         this.boostTimer = 0;
+        const massBefore = this.mass;
+        burnedMass = Math.min(0.9, Math.max(0, massBefore - START_LENGTH * 0.6));
+        const carryCents = Math.round(this.carriedValue * 100);
+        const burnCents =
+          massBefore > 0 ? Math.round(carryCents * (burnedMass / massBefore)) : 0;
+        burnedValue = burnCents / 100;
+        this.carriedValue = Math.max(0, (carryCents - burnCents) / 100);
         this.shrink(0.9);
         droppedFood = true;
       }
@@ -127,7 +171,7 @@ export class Snake {
       if (this.mass <= START_LENGTH + 2) this.boosting = false;
     }
 
-    return { droppedFood };
+    return { droppedFood, burnedValue, burnedMass };
   }
 
   _moveBody(nx, ny) {
@@ -149,16 +193,21 @@ export class Snake {
     }
   }
 
-  /** Pull nearby pellets toward the head (Slither-style food vacuum). */
-  attractFood(foodItems) {
+  /**
+   * Pull nearby pellets toward the head using the food spatial grid.
+   * @param {import("./spatial.js").SpatialHash} foodGrid
+   */
+  attractFood(foodGrid) {
+    if (!foodGrid) return;
     const h = this.head;
     const magnetR = this.radius * FOOD_MAGNET_RANGE + FOOD_MAGNET_BASE;
     const magnetR2 = magnetR * magnetR;
     const now = performance.now();
     const pullBase = FOOD_MAGNET_PULL + this.radius * 0.12;
+    const candidates = foodGrid.query(h.x, h.y, _foodQuery);
 
-    for (let i = 0; i < foodItems.length; i++) {
-      const f = foodItems[i];
+    for (let i = 0; i < candidates.length; i++) {
+      const f = candidates[i];
       if (f.immuneId === this.id && now < f.immuneUntil) continue;
 
       const dx = h.x - f.x;
@@ -175,35 +224,151 @@ export class Snake {
     }
   }
 
-  collectFood(foodItems) {
+  /** Full-scan magnet (baseline / bench). */
+  attractFoodLegacy(foodItems) {
+    const h = this.head;
+    const magnetR = this.radius * FOOD_MAGNET_RANGE + FOOD_MAGNET_BASE;
+    const magnetR2 = magnetR * magnetR;
+    const now = performance.now();
+    const pullBase = FOOD_MAGNET_PULL + this.radius * 0.12;
+
+    for (let i = 0; i < foodItems.length; i++) {
+      const f = foodItems[i];
+      if (f.immuneId === this.id && now < f.immuneUntil) continue;
+      const dx = h.x - f.x;
+      const dy = h.y - f.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= magnetR2 || d2 < 0.25) continue;
+      const d = Math.sqrt(d2);
+      const t = 1 - d / magnetR;
+      const pull = pullBase * t * t * (1.15 + t);
+      f.x += (dx / d) * pull;
+      f.y += (dy / d) * pull;
+    }
+  }
+
+  /**
+   * Eat pellets near the head via the food spatial grid.
+   * @param {import("./spatial.js").SpatialHash} foodGrid
+   * @param {Set<any>} [alreadyEaten] pellets claimed earlier this frame
+   * @returns {any[]} eaten pellet objects (caller removes them from the field)
+   */
+  collectFood(foodGrid, alreadyEaten = null) {
+    const eaten = [];
+    if (!foodGrid) return eaten;
+    const h = this.head;
+    const eatR = this.radius + 6;
+    const now = performance.now();
+    const candidates = foodGrid.query(h.x, h.y, _foodQuery);
+    const seen = new Set();
+
+    for (let i = 0; i < candidates.length; i++) {
+      const f = candidates[i];
+      if (seen.has(f) || (alreadyEaten && alreadyEaten.has(f))) continue;
+      seen.add(f);
+      // Don't instantly re-absorb your own boost trail
+      if (f.immuneId === this.id && now < f.immuneUntil) continue;
+      if (dist(h.x, h.y, f.x, f.y) < eatR + f.radius) {
+        eaten.push(f);
+        if (alreadyEaten) alreadyEaten.add(f);
+        // Money and mass are separate channels
+        this.carriedValue += f.value || 0;
+        this.grow(f.massGain ?? 1);
+      }
+    }
+    return eaten;
+  }
+
+  /** Full-scan eat (baseline / bench). Returns indices into foodItems. */
+  collectFoodLegacy(foodItems, alreadyEaten = null) {
     const eaten = [];
     const h = this.head;
     const eatR = this.radius + 6;
     const now = performance.now();
     for (let i = 0; i < foodItems.length; i++) {
       const f = foodItems[i];
-      // Don't instantly re-absorb your own boost trail
+      if (alreadyEaten && alreadyEaten.has(f)) continue;
       if (f.immuneId === this.id && now < f.immuneUntil) continue;
       if (dist(h.x, h.y, f.x, f.y) < eatR + f.radius) {
         eaten.push(i);
-        this.grow(f.value * 0.55);
+        if (alreadyEaten) alreadyEaten.add(f);
+        this.carriedValue += f.value || 0;
+        this.grow(f.massGain ?? 1);
       }
     }
     return eaten;
   }
 
+  /**
+   * Head vs body using snake-segment spatial grid.
+   * Swept-path check (boost tunneling) runs only against grid candidates.
+   * @param {import("./spatial.js").SpatialHash} snakeGrid
+   * @returns {{ hit: boolean, checks: number }}
+   */
+  hitsAny(snakeGrid) {
+    if (!snakeGrid) return { hit: false, checks: 0 };
+
+    const h = this.head;
+    const candidates = snakeGrid.query(h.x, h.y, _segQuery);
+    let checks = 0;
+
+    // Also query along the swept path midpoint when boosting/moving far
+    const px = this.prevHeadX;
+    const py = this.prevHeadY;
+    let moved2 = 0;
+    if (px != null) {
+      moved2 = (h.x - px) * (h.x - px) + (h.y - py) * (h.y - py);
+      if (moved2 > SPATIAL_SWEEP_THRESH) {
+        const midX = (h.x + px) * 0.5;
+        const midY = (h.y + py) * 0.5;
+        const mid = snakeGrid.query(midX, midY);
+        for (let i = 0; i < mid.length; i++) candidates.push(mid[i]);
+      }
+    }
+
+    const seen = new Set();
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      if (c.snakeId === this.id) continue;
+      // Skip only their head tip so two heads brushing doesn't always double-kill
+      if (c.index < 2) continue;
+      const key = c.snakeId * 100000 + c.index;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const other = c.snake;
+      if (!other || !other.alive) continue;
+
+      const hitR = this.radius * 0.88 + other.radius * 0.88;
+      const hitR2 = hitR * hitR;
+      const s = c.seg;
+      checks++;
+
+      const dx = h.x - s.x;
+      const dy = h.y - s.y;
+      if (dx * dx + dy * dy < hitR2) return { hit: true, checks };
+
+      if (moved2 > 0.25) {
+        checks++;
+        if (distToSegment2(s.x, s.y, px, py, h.x, h.y) < hitR2) {
+          return { hit: true, checks };
+        }
+      }
+    }
+
+    return { hit: false, checks };
+  }
+
+  /** Legacy pairwise API — kept for tests; prefer hitsAny with a grid. */
   hitsSnake(other) {
     if (!other.alive || other === this) return false;
 
     const h = this.head;
-    // Match visible body size (segments are drawn at full radius)
     const hitR = this.radius * 0.88 + other.radius * 0.88;
     const hitR2 = hitR * hitR;
     const segs = other.segments;
 
-    // Skip only their head tip so two heads brushing doesn't always double-kill
     const start = 2;
-    // Never leave sample gaps larger than ~hit radius
     const step = Math.max(1, Math.floor((hitR * 0.85) / SEGMENT_SPACING));
 
     for (let i = start; i < segs.length; i += step) {
@@ -212,7 +377,6 @@ export class Snake {
       const dy = h.y - s.y;
       if (dx * dx + dy * dy < hitR2) return true;
     }
-    // Ensure tip of their tail is tested when step > 1
     if (segs.length > start) {
       const tip = segs[segs.length - 1];
       const dx = h.x - tip.x;
@@ -220,7 +384,6 @@ export class Snake {
       if (dx * dx + dy * dy < hitR2) return true;
     }
 
-    // Swept test: catch tunneling when boosting through a body
     const px = this.prevHeadX;
     const py = this.prevHeadY;
     if (px != null) {
@@ -239,8 +402,13 @@ export class Snake {
 
   die() {
     this.alive = false;
+    this.cashOutMs = 0;
+    this.cashOutProgress = 0;
   }
 }
+
+/** When head travels this far² in one frame, also query the path midpoint. */
+const SPATIAL_SWEEP_THRESH = 200 * 200;
 
 /** Squared distance from point (px,py) to segment (ax,ay)-(bx,by). */
 function distToSegment2(px, py, ax, ay, bx, by) {

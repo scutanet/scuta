@@ -1,13 +1,31 @@
 import { WORLD_RADIUS, angleDiff, dist, randRange, randomInCircle } from "./utils.js";
+import { nearestCashOutZone } from "./economy.js";
 
 /**
  * Lightweight Slither-like bot: seek food, avoid larger snakes, chase smaller ones.
+ * When carriedValue crosses the cash-out threshold, head for the nearest zone.
  */
-export function updateBotAI(bot, snakes, food) {
+export function updateBotAI(bot, snakes, food, opts = {}) {
   if (!bot.alive) return;
+
+  const zones = opts.zones || [];
+  const cashThreshold = opts.cashThreshold ?? Infinity;
 
   bot.aiTimer--;
   const head = bot.head;
+
+  // Cash out when rich enough
+  if (zones.length && bot.carriedValue >= cashThreshold) {
+    bot.aiState = "cashout";
+    const zone = nearestCashOutZone(head.x, head.y, zones);
+    if (zone) {
+      bot.setTarget(zone.x, zone.y);
+      const d = dist(head.x, head.y, zone.x, zone.y);
+      // Boost toward the zone when still outside its radius
+      bot.boosting = d > zone.radius * 1.15 && bot.mass > 18;
+      return;
+    }
+  }
 
   // Threats & prey
   let nearestThreat = null;
@@ -120,10 +138,10 @@ function findBestFood(bot, food) {
     const f = items[i];
     const d = dist(h.x, h.y, f.x, f.y);
     if (d > 700) continue;
-    // Prefer food roughly ahead
+    // Prefer food roughly ahead; weight monetary value
     const ang = Math.atan2(f.y - h.y, f.x - h.x);
     const align = Math.cos(angleDiff(bot.angle, ang));
-    const score = f.value * 8 + f.radius * 2 - d * 0.04 + align * 30;
+    const score = (f.value || 0) * 80 + (f.massGain || 1) * 4 + f.radius * 2 - d * 0.04 + align * 30;
     if (score > bestScore) {
       bestScore = score;
       best = f;

@@ -1,0 +1,9 @@
+{
+  "name": "scuta-io",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test js/economy.test.js js/spatial.test.js",
+    "bench": "node js/perf.bench.js"
+  }
+}

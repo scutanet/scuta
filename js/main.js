@@ -22,6 +22,7 @@ import {
   setPreferredServerId,
   tierBadge,
   topUpDemoBalance,
+  updateDemoBalance,
   escapeHtml,
 } from "./servers.js";
 
@@ -33,6 +34,7 @@ const nickInput = document.getElementById("nick");
 const playBtn = document.getElementById("play-btn");
 const lengthEl = document.getElementById("length");
 const rankEl = document.getElementById("rank");
+const carriedValueEl = document.getElementById("carried-value");
 const lbList = document.getElementById("lb-list");
 const settingsBtn = document.getElementById("settings-btn");
 const customizeBtn = document.getElementById("customize-btn");
@@ -94,9 +96,21 @@ const game = new Game({
     menu.classList.remove("hidden");
     nickInput.focus();
   },
-  onHud({ length, rank, leaderboard }) {
+  onCashOut({ amount }) {
+    const next = updateDemoBalance(getDemoBalance() + amount);
+    clearServerSession();
+    refreshServerLabel();
+    hud.classList.add("hidden");
+    menu.classList.remove("hidden");
+    nickInput.focus();
+    showLobbyToast(`Cashed out ${formatMoney(amount)}. Wallet: ${formatMoney(next)}.`);
+  },
+  onHud({ length, rank, leaderboard, carriedValue }) {
     lengthEl.textContent = String(length);
     rankEl.textContent = rank;
+    if (carriedValueEl) {
+      carriedValueEl.textContent = formatMoney(carriedValue ?? 0);
+    }
     lbList.innerHTML = leaderboard
       .map(
         (e, i) =>

@@ -1500,6 +1500,20 @@ body {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
 
+#score-box .hud-value {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+  color: #7dffd6;
+  text-shadow: 0 0 12px rgba(64, 255, 210, 0.35), 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+#score-box .hud-value span {
+  font-variant-numeric: tabular-nums;
+  color: #b8ffe8;
+}
+
 #score-box span {
   font-weight: 700;
 }

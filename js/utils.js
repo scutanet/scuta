@@ -19,6 +19,29 @@ export const FOOD_MAGNET_BASE = 26;
 /** Base pull speed (world units / frame) at point-blank; falls off with distance */
 export const FOOD_MAGNET_PULL = 2.8;
 
+/** Global cap on active boost-trail pellets (kind === "trail"). */
+export const MAX_BOOST_TRAILS = 420;
+
+/**
+ * LOD / culling thresholds (world units from camera).
+ * Near = full detail; mid = skip every 2nd segment; far = every 3rd + no FX.
+ */
+export const LOD = Object.freeze({
+  /** Margin outside the camera rect still considered "visible". */
+  VIEW_MARGIN: 80,
+  /** Full eyes / gloss / outline / glow / particles. */
+  NEAR: 550,
+  /** Skip every 2nd body segment; drop eyes/gloss/outline. */
+  MID: 1100,
+  /** Beyond MID: skip every 3rd segment; no glow/particles. */
+  FAR_STEP: 3,
+  MID_STEP: 2,
+  NEAR_STEP: 1,
+});
+
+/** Bot AI: each bot re-decides every N frames on a rotating schedule. */
+export const AI_STAGGER_FRAMES = 4;
+
 export function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
