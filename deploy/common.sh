@@ -151,6 +151,22 @@ fi
 
 pm2 save
 pm2 status "${APP_NAME}"
+
+# Expose app via :80 (SG allows 80; regional ports are often firewalled)
+APP_PORT="$(node -e "import('./js/regions.js').then(m=>console.log(m.getRegionById(process.argv[1]).port))" "${REGION}" 2>/dev/null || true)"
+if [[ -z "${APP_PORT}" ]]; then
+  case "${REGION}" in
+    NA) APP_PORT=3001 ;;
+    EU) APP_PORT=3002 ;;
+    ASIA) APP_PORT=3003 ;;
+  esac
+fi
+if command -v iptables >/dev/null 2>&1; then
+  if ! sudo iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports "${APP_PORT}" 2>/dev/null; then
+    sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports "${APP_PORT}" || true
+  fi
+fi
+
 echo "==> Done [${REGION}]"
 REMOTE
 
