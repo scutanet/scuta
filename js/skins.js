@@ -98,7 +98,7 @@ export function skinByName(name) {
 }
 
 export function foodColor() {
-  // Saturated neon hues like Slither pellets
+  // Saturated neon hues for pellets
   const hues = [0, 18, 35, 50, 95, 140, 175, 200, 260, 300, 330];
   const h = hues[Math.floor(Math.random() * hues.length)];
   return { h, s: 90 + Math.random() * 10, l: 52 + Math.random() * 12 };

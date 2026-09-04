@@ -88,6 +88,20 @@
       <div class="lobby-scan"></div>
     </div>
 
+    <button type="button" id="region-btn" class="corner-btn corner-region" aria-label="Region Servers">
+      <span class="corner-icon region-icon" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="48" height="48" fill="none">
+          <circle cx="32" cy="32" r="22" stroke="currentColor" stroke-width="2.2" opacity="0.9"/>
+          <ellipse cx="32" cy="32" rx="10" ry="22" stroke="currentColor" stroke-width="1.6" opacity="0.75"/>
+          <path d="M10 32h44M12.5 22h39M12.5 42h39" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+          <circle cx="44" cy="22" r="4.5" fill="#3d7cff"/>
+          <circle cx="22" cy="38" r="4" fill="#26a17b"/>
+          <circle cx="40" cy="44" r="3.5" fill="#f7931a"/>
+        </svg>
+      </span>
+      <span class="corner-label" id="region-btn-label">Region</span>
+    </button>
+
     <button type="button" id="settings-btn" class="corner-btn corner-settings" aria-label="Settings">
       <span class="corner-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -212,15 +226,12 @@
       </div>
 
       <div class="lobby-actions">
-        <button type="button" id="play-btn" class="btn-play">
+        <button type="button" id="online-btn" class="btn-play btn-online-primary">
           <span class="btn-play-shine" aria-hidden="true"></span>
-          <span class="btn-play-label">PLAY OFFLINE</span>
+          <span class="btn-play-label" id="online-btn-label">PLAY ONLINE</span>
         </button>
-        <button type="button" id="online-btn" class="btn-online" disabled aria-disabled="true">
-          <svg class="lock-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path fill="currentColor" d="M17 9V7a5 5 0 0 0-10 0v2H5v12h14V9h-2zm-8-2a3 3 0 0 1 6 0v2H9V7zm2 8.7V18h2v-2.3a1.5 1.5 0 1 0-2 0z"/>
-          </svg>
-          ONLINE — COMING SOON
+        <button type="button" id="play-btn" class="btn-offline">
+          PLAY OFFLINE
         </button>
       </div>
     </div>
@@ -258,6 +269,29 @@
     </div>
 
     <div id="lobby-toast" class="lobby-toast hidden" aria-live="polite"></div>
+
+    <div id="regions-screen" class="regions-screen hidden" role="dialog" aria-modal="true" aria-label="Region Servers">
+      <div class="regions-bg" aria-hidden="true"></div>
+      <header class="regions-header">
+        <div class="regions-header-text">
+          <span class="regions-kicker">SERVERS</span>
+          <h2 class="regions-title">Pick your region</h2>
+          <p class="regions-sub">Auto-connects to the lowest ping. You can override anytime.</p>
+        </div>
+        <button type="button" id="regions-refresh" class="regions-refresh" aria-label="Refresh pings">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M21 12a9 9 0 1 1-2.6-6.3"/>
+            <path d="M21 3v6h-6"/>
+          </svg>
+          Refresh
+        </button>
+      </header>
+      <div id="regions-list" class="regions-list" role="listbox" aria-label="Regions"></div>
+      <div class="regions-footer">
+        <p id="regions-auto-note" class="regions-auto-note">Measuring latency…</p>
+        <button type="button" id="regions-close" class="regions-close">BACK</button>
+      </div>
+    </div>
 
     <div id="pools-screen" class="pools-screen hidden" role="dialog" aria-modal="true" aria-label="Liquidity Pools">
       <div class="pools-bg" aria-hidden="true"></div>
@@ -343,7 +377,7 @@
 
       <button type="button" id="cust-ok-btn" class="cust-ok">OK</button>
 
-      <button type="button" id="cust-build-btn" class="cust-corner cust-build" aria-label="Build a Slither">
+      <button type="button" id="cust-build-btn" class="cust-corner cust-build" aria-label="Build a Snake">
         <span class="cust-corner-icon" aria-hidden="true">
           <svg viewBox="0 0 72 40" width="72" height="40">
             <circle cx="8" cy="22" r="7" fill="#7c3aed"/>
@@ -358,7 +392,7 @@
             <circle cx="62.2" cy="14.4" r="1.4" fill="#111"/>
           </svg>
         </span>
-        <span class="cust-corner-label">Build a Slither</span>
+        <span class="cust-corner-label">Build a Snake</span>
       </button>
 
       <div id="cust-toast" class="cust-toast hidden" aria-live="polite"></div>

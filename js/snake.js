@@ -74,7 +74,7 @@ export class Snake {
   }
 
   _updateRadius() {
-    // Slightly plumper than classic Slither so neon coins read as a solid body
+    // Slightly plump so neon coins read as a solid body
     this.radius = clamp(10 + Math.sqrt(Math.max(0, this.mass - START_LENGTH)) * 0.62, 10, 46);
   }
 

@@ -46,7 +46,7 @@ export class Renderer {
     this.ctx = canvas.getContext("2d", { alpha: false });
     this.minimap = minimapCanvas;
     this.mctx = minimapCanvas.getContext("2d");
-    // Real Slither start FOV (~14 hexes across)
+    // Start FOV (~14 hexes across)
     this.cam = { x: 0, y: 0, zoom: 3.4 };
     this.viewW = 0;
     this.viewH = 0;
@@ -75,7 +75,7 @@ export class Renderer {
     this.cam.x += (h.x - this.cam.x) * 0.18;
     this.cam.y += (h.y - this.cam.y) * 0.18;
 
-    // Real Slither.io FOV: tight when small (~14 hexes across), then ease out
+    // FOV: tight when small (~14 hexes across), then ease out
     // with sqrt(mass) so early growth zooms gently and huge snakes pull way back.
     const growth = Math.max(0, snake.mass - 12);
     const fat = Math.max(0, snake.radius - 10);
@@ -207,7 +207,7 @@ export class Renderer {
     ctx.fillStyle = ARENA_FILL;
     ctx.fill();
 
-    // Soft outer rim like Slither
+    // Soft outer rim
     ctx.beginPath();
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.lineWidth = 28;

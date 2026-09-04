@@ -4,6 +4,13 @@
   "type": "module",
   "scripts": {
     "test": "node --test js/economy.test.js js/spatial.test.js",
-    "bench": "node js/perf.bench.js"
+    "bench": "node js/perf.bench.js",
+    "server": "node server/index.js",
+    "server:na": "node server/index.js --region NA",
+    "server:eu": "node server/index.js --region EU",
+    "server:asia": "node server/index.js --region ASIA",
+    "deploy:na": "bash deploy/deploy-na.sh",
+    "deploy:eu": "bash deploy/deploy-eu.sh",
+    "deploy:asia": "bash deploy/deploy-asia.sh"
   }
 }

@@ -2,7 +2,7 @@ import { WORLD_RADIUS, angleDiff, dist, randRange, randomInCircle } from "./util
 import { nearestCashOutZone } from "./economy.js";
 
 /**
- * Lightweight Slither-like bot: seek food, avoid larger snakes, chase smaller ones.
+ * Lightweight arena bot: seek food, avoid larger snakes, chase smaller ones.
  * When carriedValue crosses the cash-out threshold, head for the nearest zone.
  */
 export function updateBotAI(bot, snakes, food, opts = {}) {

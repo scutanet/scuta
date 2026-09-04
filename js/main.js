@@ -25,6 +25,18 @@ import {
   updateDemoBalance,
   escapeHtml,
 } from "./servers.js";
+import {
+  REGIONS,
+  getPreferredRegionId,
+  getRegionById,
+  pickLowestLatencyRegion,
+  pingAllRegions,
+  regionDisplayName,
+  regionWsUrl,
+  setPreferredRegionId,
+} from "./regions.js";
+
+const REGION_AUTO_KEY = "scuta_region_auto";
 
 const canvas = document.getElementById("game");
 const minimap = document.getElementById("minimap");
@@ -32,11 +44,15 @@ const menu = document.getElementById("menu");
 const hud = document.getElementById("hud");
 const nickInput = document.getElementById("nick");
 const playBtn = document.getElementById("play-btn");
+const onlineBtn = document.getElementById("online-btn");
+const onlineBtnLabel = document.getElementById("online-btn-label");
 const lengthEl = document.getElementById("length");
 const rankEl = document.getElementById("rank");
 const carriedValueEl = document.getElementById("carried-value");
 const lbList = document.getElementById("lb-list");
 const settingsBtn = document.getElementById("settings-btn");
+const regionBtn = document.getElementById("region-btn");
+const regionBtnLabel = document.getElementById("region-btn-label");
 const customizeBtn = document.getElementById("customize-btn");
 const serverBtn = document.getElementById("server-btn");
 const lobbyModal = document.getElementById("lobby-modal");
@@ -46,6 +62,12 @@ const modalClose = document.getElementById("modal-close");
 const modalCard = lobbyModal.querySelector(".lobby-modal-card");
 const serverLabel = document.getElementById("server-label");
 const lobbyToast = document.getElementById("lobby-toast");
+
+const regionsScreen = document.getElementById("regions-screen");
+const regionsList = document.getElementById("regions-list");
+const regionsClose = document.getElementById("regions-close");
+const regionsRefresh = document.getElementById("regions-refresh");
+const regionsAutoNote = document.getElementById("regions-auto-note");
 
 const poolsScreen = document.getElementById("pools-screen");
 const poolsCarousel = document.getElementById("pools-carousel");
@@ -80,16 +102,208 @@ let customizeIndex = Math.max(0, SKINS.findIndex((s) => s.name === selectedSkinN
 let poolsIndex = getServerIndex(getPreferredServerId());
 let toastTimer = 0;
 let lobbyToastTimer = 0;
+
+/** @type {Map<string, { ok: boolean, latencyMs: number | null, players: number, uptime: number }>} */
+let regionPingMap = new Map();
+let regionPinging = false;
+let selectedRegionId = getPreferredRegionId("NA");
+let regionAutoSelect = localStorage.getItem(REGION_AUTO_KEY) !== "0";
+/** @type {WebSocket | null} */
+let onlineSocket = null;
+let onlineConnecting = false;
+
 refreshServerLabel();
+refreshRegionChrome();
+void refreshRegionPings({ autoSelect: regionAutoSelect });
 
 function getSelectedSkin() {
   return skinByName(selectedSkinName);
 }
 
+function getSelectedRegion() {
+  return getRegionById(selectedRegionId) || REGIONS[0];
+}
+
+function isRegionAuto() {
+  return localStorage.getItem(REGION_AUTO_KEY) !== "0";
+}
+
+function setRegionAuto(on) {
+  regionAutoSelect = on;
+  localStorage.setItem(REGION_AUTO_KEY, on ? "1" : "0");
+}
+
+function refreshRegionChrome() {
+  const region = getSelectedRegion();
+  if (regionBtnLabel) regionBtnLabel.textContent = region.code;
+  regionBtn?.classList.toggle("is-best", Boolean(bestRegionId() === region.id));
+  const p = regionPingMap.get(region.id);
+  if (onlineBtnLabel && !onlineConnecting) {
+    if (p?.ok && p.latencyMs != null) {
+      onlineBtnLabel.textContent = `PLAY ONLINE · ${region.code} ${p.latencyMs}ms`;
+    } else {
+      onlineBtnLabel.textContent = `PLAY ONLINE · ${region.code}`;
+    }
+  }
+  refreshServerLabel();
+}
+
+function bestRegionId() {
+  let best = null;
+  let bestMs = Infinity;
+  for (const r of REGIONS) {
+    const p = regionPingMap.get(r.id);
+    if (!p?.ok || p.latencyMs == null) continue;
+    if (p.latencyMs < bestMs) {
+      bestMs = p.latencyMs;
+      best = r.id;
+    }
+  }
+  return best;
+}
+
+function formatPing(p) {
+  if (!p || p.latencyMs == null) {
+    if (regionPinging) return { text: "…", cls: "is-pending" };
+    return { text: "—", cls: "is-down" };
+  }
+  if (!p.ok) return { text: "DOWN", cls: "is-down" };
+  const ms = p.latencyMs;
+  const cls = ms < 80 ? "is-good" : ms < 160 ? "is-ok" : "is-bad";
+  return { text: `${ms} ms`, cls };
+}
+
+function renderRegionsList() {
+  if (!regionsList) return;
+  const bestId = bestRegionId();
+  regionsList.innerHTML = REGIONS.map((r) => {
+    const p = regionPingMap.get(r.id);
+    const ping = formatPing(p);
+    const selected = r.id === selectedRegionId;
+    const isBest = r.id === bestId;
+    const players = p?.ok ? p.players : null;
+    return `<button type="button" class="region-card ${selected ? "is-selected" : ""} ${isBest ? "is-best" : ""}" data-region="${r.id}" role="option" aria-selected="${selected}" style="--region-accent:${r.accent}">
+      <div class="region-card-top">
+        <span class="region-code">${escapeHtml(r.code)}</span>
+        <span class="region-ping ${ping.cls}">${escapeHtml(ping.text)}</span>
+      </div>
+      <div>
+        <h3 class="region-name">${escapeHtml(r.name)}</h3>
+        <p class="region-city">${escapeHtml(r.city)}</p>
+      </div>
+      <div class="region-meta">
+        ${isBest ? `<span class="region-badge">Best ping</span>` : ""}
+        ${players != null ? `<span>${players} online</span>` : `<span>Unreachable</span>`}
+        <span class="region-card-host">${escapeHtml(r.host)}</span>
+      </div>
+    </button>`;
+  }).join("");
+
+  regionsList.querySelectorAll(".region-card").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectRegion(btn.dataset.region, { manual: true });
+    });
+  });
+}
+
+function updateRegionsNote() {
+  if (!regionsAutoNote) return;
+  const region = getSelectedRegion();
+  const p = regionPingMap.get(region.id);
+  const ping = formatPing(p);
+  if (regionPinging) {
+    regionsAutoNote.textContent = "Measuring latency to NA · EU · ASIA…";
+    return;
+  }
+  if (isRegionAuto()) {
+    regionsAutoNote.textContent = `Auto: connected to ${regionDisplayName(region)} (${ping.text}). Tap a card to lock a region.`;
+  } else {
+    regionsAutoNote.textContent = `Manual: ${regionDisplayName(region)} (${ping.text}). Refresh re-measures; selection stays locked.`;
+  }
+}
+
+/**
+ * @param {string} id
+ * @param {{ manual?: boolean }} [opts]
+ */
+function selectRegion(id, opts = {}) {
+  const region = getRegionById(id);
+  if (!region) return;
+  selectedRegionId = region.id;
+  setPreferredRegionId(region.id);
+  if (opts.manual) setRegionAuto(false);
+  refreshRegionChrome();
+  renderRegionsList();
+  updateRegionsNote();
+  if (opts.manual) {
+    showLobbyToast(`Region locked: ${regionDisplayName(region)}`);
+  }
+}
+
+/**
+ * @param {{ autoSelect?: boolean }} [opts]
+ */
+async function refreshRegionPings(opts = {}) {
+  if (regionPinging) return;
+  regionPinging = true;
+  regionsRefresh?.classList.add("is-busy");
+  updateRegionsNote();
+  renderRegionsList();
+
+  try {
+    regionPingMap = await pingAllRegions();
+    if (opts.autoSelect || isRegionAuto()) {
+      const best = pickLowestLatencyRegion(regionPingMap, selectedRegionId);
+      selectedRegionId = best.id;
+      setPreferredRegionId(best.id);
+      if (opts.autoSelect) setRegionAuto(true);
+    }
+  } finally {
+    regionPinging = false;
+    regionsRefresh?.classList.remove("is-busy");
+    refreshRegionChrome();
+    renderRegionsList();
+    updateRegionsNote();
+  }
+}
+
+function openRegionsScreen() {
+  closeModal();
+  closeCustomize();
+  closePoolsScreen();
+  renderRegionsList();
+  updateRegionsNote();
+  regionsScreen.classList.remove("hidden");
+  void refreshRegionPings({ autoSelect: isRegionAuto() });
+}
+
+function closeRegionsScreen() {
+  regionsScreen?.classList.add("hidden");
+}
+
+regionBtn?.addEventListener("click", openRegionsScreen);
+regionsClose?.addEventListener("click", closeRegionsScreen);
+regionsRefresh?.addEventListener("click", () => {
+  void refreshRegionPings({ autoSelect: isRegionAuto() });
+});
+
+/** Active regional endpoint for future online join (region + ws URL + last ping). */
+function getOnlineEndpoint() {
+  const region = getSelectedRegion();
+  return {
+    region: region.id,
+    label: regionDisplayName(region),
+    wsUrl: regionWsUrl(region),
+    ping: regionPingMap.get(region.id)?.latencyMs ?? null,
+  };
+}
+window.__scutaRegion = getOnlineEndpoint;
+
 const game = new Game({
   canvas,
   minimap,
   onDeath() {
+    disconnectOnline();
     clearServerSession();
     refreshServerLabel();
     hud.classList.add("hidden");
@@ -97,6 +311,7 @@ const game = new Game({
     nickInput.focus();
   },
   onCashOut({ amount }) {
+    disconnectOnline();
     const next = updateDemoBalance(getDemoBalance() + amount);
     clearServerSession();
     refreshServerLabel();
@@ -125,10 +340,12 @@ const game = new Game({
 function refreshServerLabel() {
   const session = getServerSession();
   const server = session ? getServerById(session.serverId) : getServerById(getPreferredServerId());
+  const region = getSelectedRegion();
+  const regionBit = region ? region.code : "—";
   if (server) {
-    serverLabel.textContent = serverDisplayName(server);
+    serverLabel.textContent = `${regionBit} · ${serverDisplayName(server)}`;
   } else {
-    serverLabel.textContent = "Choose Server";
+    serverLabel.textContent = `${regionBit} · Choose Server`;
   }
 }
 
@@ -139,42 +356,224 @@ function showLobbyToast(msg) {
   lobbyToastTimer = setTimeout(() => lobbyToast.classList.add("hidden"), 2800);
 }
 
-function begin() {
-  let session = getServerSession();
+function disconnectOnline() {
+  if (onlineSocket) {
+    try {
+      onlineSocket.onopen = null;
+      onlineSocket.onclose = null;
+      onlineSocket.onerror = null;
+      onlineSocket.onmessage = null;
+      if (
+        onlineSocket.readyState === WebSocket.OPEN ||
+        onlineSocket.readyState === WebSocket.CONNECTING
+      ) {
+        onlineSocket.close();
+      }
+    } catch {
+      /* ignore */
+    }
+    onlineSocket = null;
+  }
+}
 
-  if (!session) {
-    const preferred = getPreferredServerId();
-    const join = selectServer(preferred);
-    if (!join.ok) {
-      openPoolsScreen(getServerIndex(preferred));
-      showLobbyToast(
-        join.reason === "insufficient_funds"
-          ? `Insufficient funds for ${serverDisplayName(join.server)}. Top up your demo wallet.`
-          : "Choose a liquidity pool and pay the buy-in to play."
-      );
+/**
+ * Open a WebSocket to the selected region. Resolves with the socket + welcome payload.
+ * @param {import("./regions.js").Region} region
+ * @param {number} [timeoutMs]
+ */
+function connectRegionSocket(region, timeoutMs = 6000) {
+  const url = regionWsUrl(region);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    /** @type {WebSocket} */
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      reject(err);
       return;
     }
-    session = join.session;
-    refreshServerLabel();
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      reject(new Error(`Timed out connecting to ${region.code}`));
+    }, timeoutMs);
+
+    ws.onopen = () => {
+      // Wait briefly for welcome; still resolve if none arrives.
+      const welcomeTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ws, welcome: null });
+      }, 800);
+
+      ws.onmessage = (ev) => {
+        if (settled) return;
+        let msg = null;
+        try {
+          msg = JSON.parse(String(ev.data));
+        } catch {
+          return;
+        }
+        if (msg?.type === "welcome") {
+          settled = true;
+          clearTimeout(timer);
+          clearTimeout(welcomeTimer);
+          resolve({ ws, welcome: msg });
+        }
+      };
+    };
+
+    ws.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`Cannot reach ${regionDisplayName(region)}`));
+    };
+
+    ws.onclose = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`${region.code} closed the connection`));
+    };
+  });
+}
+
+function ensurePoolSession() {
+  let session = getServerSession();
+  if (session) return { ok: true, session };
+
+  const preferred = getPreferredServerId();
+  const join = selectServer(preferred);
+  if (!join.ok) {
+    openPoolsScreen(getServerIndex(preferred));
+    showLobbyToast(
+      join.reason === "insufficient_funds"
+        ? `Insufficient funds for ${serverDisplayName(join.server)}. Top up your demo wallet.`
+        : "Choose a liquidity pool and pay the buy-in to play."
+    );
+    return { ok: false };
   }
+  refreshServerLabel();
+  return { ok: true, session: join.session };
+}
+
+/**
+ * @param {"online" | "offline"} mode
+ * @param {{ socket?: WebSocket | null }} [opts]
+ */
+function launchRound(mode, opts = {}) {
+  const join = ensurePoolSession();
+  if (!join.ok) return;
 
   const nick = nickInput.value.trim().slice(0, 16) || "scuta";
   localStorage.setItem("scuta_nick", nick);
   closeModal();
   closeCustomize();
   closePoolsScreen();
+  closeRegionsScreen();
   menu.classList.add("hidden");
   hud.classList.remove("hidden");
   refreshServerLabel();
+
+  if (mode === "online" && opts.socket) {
+    onlineSocket = opts.socket;
+    onlineSocket.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data));
+        if (msg?.type === "pong") return;
+      } catch {
+        /* ignore */
+      }
+    };
+    onlineSocket.onclose = () => {
+      onlineSocket = null;
+    };
+    // Keepalive while in-round
+    const beat = setInterval(() => {
+      if (!onlineSocket || onlineSocket.readyState !== WebSocket.OPEN) {
+        clearInterval(beat);
+        return;
+      }
+      try {
+        onlineSocket.send(JSON.stringify({ type: "ping", t: Date.now() }));
+      } catch {
+        clearInterval(beat);
+      }
+    }, 15000);
+    onlineSocket.addEventListener("close", () => clearInterval(beat));
+  }
+
   game.start(nick, {
     skin: getSelectedSkin(),
-    serverSession: { ...session },
+    serverSession: { ...join.session },
+    mode: "ai",
+    online: mode === "online",
+    regionId: getSelectedRegion().id,
   });
 }
 
-playBtn.addEventListener("click", begin);
+function beginOffline() {
+  disconnectOnline();
+  launchRound("offline");
+}
+
+async function beginOnline() {
+  if (onlineConnecting) return;
+
+  const region = getSelectedRegion();
+  const ping = regionPingMap.get(region.id);
+  if (ping && !ping.ok) {
+    // Re-measure once before giving up
+    await refreshRegionPings({ autoSelect: isRegionAuto() });
+  }
+  const after = regionPingMap.get(getSelectedRegion().id);
+  if (after && !after.ok) {
+    openRegionsScreen();
+    showLobbyToast(`${regionDisplayName(region)} is unreachable. Pick another region or Play Offline.`);
+    return;
+  }
+
+  onlineConnecting = true;
+  onlineBtn.disabled = true;
+  if (onlineBtnLabel) onlineBtnLabel.textContent = `CONNECTING · ${region.code}…`;
+
+  try {
+    disconnectOnline();
+    const { ws, welcome } = await connectRegionSocket(getSelectedRegion());
+    const players = welcome?.players != null ? Number(welcome.players) : null;
+    showLobbyToast(
+      players != null
+        ? `Connected to ${regionDisplayName(getSelectedRegion())} · ${players} online`
+        : `Connected to ${regionDisplayName(getSelectedRegion())}`
+    );
+    launchRound("online", { socket: ws });
+  } catch (err) {
+    disconnectOnline();
+    const msg = err instanceof Error ? err.message : "Connection failed";
+    showLobbyToast(`${msg}. Try another region or Play Offline.`);
+    openRegionsScreen();
+  } finally {
+    onlineConnecting = false;
+    onlineBtn.disabled = false;
+    refreshRegionChrome();
+  }
+}
+
+onlineBtn.addEventListener("click", () => {
+  void beginOnline();
+});
+playBtn.addEventListener("click", beginOffline);
 nickInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") begin();
+  if (e.key === "Enter") void beginOnline();
 });
 
 function openModal(title, html, { wide = false } = {}) {
@@ -290,6 +689,7 @@ function refreshPoolsWallet() {
 function openPoolsScreen(forceIndex = null) {
   closeModal();
   closeCustomize();
+  closeRegionsScreen();
   if (forceIndex != null) poolsIndex = forceIndex;
   else poolsIndex = getServerIndex(getPreferredServerId());
   refreshPoolsWallet();
@@ -321,7 +721,7 @@ function enterFocusedPool() {
   refreshServerLabel();
   refreshPoolsWallet();
   closePoolsScreen();
-  begin();
+  void beginOnline();
 }
 
 poolsPrev.addEventListener("click", () => setPoolsIndex(poolsIndex - 1));
@@ -371,6 +771,7 @@ poolsCarousel.addEventListener(
 serverBtn.addEventListener("click", () => openPoolsScreen());
 
 settingsBtn.addEventListener("click", () => {
+  closeRegionsScreen();
   openModal(
     "Settings",
     `<p>Mouse to steer. Hold click or Space to boost.</p>
@@ -391,7 +792,7 @@ settingsBtn.addEventListener("click", () => {
   }
 });
 
-/* ─── Customize Snake (Slither-style horizontal switcher) ─── */
+/* ─── Customize Snake (horizontal skin switcher) ─── */
 
 const CIRCUIT_PREVIEW_ACCENT = "#5dffc8";
 
@@ -733,6 +1134,7 @@ function showToast(msg) {
 function openCustomize() {
   closeModal();
   closePoolsScreen();
+  closeRegionsScreen();
   customizeIndex = Math.max(0, SKINS.findIndex((s) => s.name === selectedSkinName));
   renderCarousel(false);
   customizeScreen.classList.remove("hidden");
@@ -913,6 +1315,18 @@ boostBtn.addEventListener("mouseup", () => setBoostUI(false));
 boostBtn.addEventListener("mouseleave", () => setBoostUI(false));
 
 window.addEventListener("keydown", (e) => {
+  if (!regionsScreen.classList.contains("hidden")) {
+    if (e.code === "Escape") {
+      e.preventDefault();
+      closeRegionsScreen();
+      return;
+    }
+    if (e.code === "KeyR" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void refreshRegionPings({ autoSelect: isRegionAuto() });
+      return;
+    }
+  }
   if (!poolsScreen.classList.contains("hidden")) {
     if (e.code === "Escape") {
       e.preventDefault();
