@@ -64,6 +64,11 @@ function loadSet(urls, bucket) {
 }
 
 export function loadFoodSprites() {
+  if (typeof Image === "undefined") {
+    ready = false;
+    loadPromise = Promise.resolve(false);
+    return loadPromise;
+  }
   if (loadPromise) return loadPromise;
   loadPromise = Promise.all([
     loadSet(MAP_SPRITE_URLS, mapImages),

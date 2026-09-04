@@ -20,20 +20,23 @@ const RING_VIS = {
 
 export class FoodField {
   /**
-   * @param {{ ringBudgets?: { outer: number, middle: number, center: number } } | null} economy
+   * @param {{ ringBudgets?: { outer: number, middle: number, center: number }, foodCount?: number } | null} economy
    */
   constructor(economy = null) {
     this.items = [];
-    this._mapTarget = FOOD_COUNT;
+    this._mapTarget =
+      economy && economy.foodCount != null
+        ? Math.max(0, Math.floor(economy.foodCount))
+        : FOOD_COUNT;
     if (economy?.ringBudgets) {
-      this._spawnRingSeeded(economy.ringBudgets);
-    } else {
+      this._spawnRingSeeded(economy.ringBudgets, this._mapTarget || FOOD_COUNT);
+    } else if (this._mapTarget > 0) {
       this._spawnInitialUniform();
     }
   }
 
   _spawnInitialUniform() {
-    for (let i = 0; i < FOOD_COUNT; i++) {
+    for (let i = 0; i < this._mapTarget; i++) {
       this.spawn(undefined, undefined, 1, null, null, { kind: "map", massGain: 1, ring: "middle" });
     }
   }
@@ -41,10 +44,13 @@ export class FoodField {
   /**
    * Equal pellet counts per ring; value = ring budget ÷ count (exact cents).
    * Pellet value is never invented — only drawn from ringBudgets.
+   * @param {{ outer: number, middle: number, center: number }} ringBudgets
+   * @param {number} [foodCount]
    */
-  _spawnRingSeeded(ringBudgets) {
-    const base = Math.floor(FOOD_COUNT / 3);
-    const rem = FOOD_COUNT - base * 3;
+  _spawnRingSeeded(ringBudgets, foodCount = FOOD_COUNT) {
+    const total = Math.max(3, Math.floor(foodCount));
+    const base = Math.floor(total / 3);
+    const rem = total - base * 3;
     const counts = {
       outer: base,
       middle: base,

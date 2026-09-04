@@ -106,11 +106,14 @@ export class Game {
       serverSession = null,
       capacityOverride = null,
       flags = null,
+      onlineSocket = null,
     } = opts;
     if (flags) Object.assign(this.flags, flags);
     this.snakes = [];
     this._namesUsed.clear();
     this.mode = mode;
+    this.onlineSocket = onlineSocket;
+    this.netPlayerId = null;
     this.spectateTarget = null;
     this.totalCashedOut = 0;
     this.cashedOutIds = new Set();
@@ -125,6 +128,18 @@ export class Game {
     this.capacity = capacityOverride ?? this.server?.maxCapacity ?? 28;
     this.economy = computeRoundEconomy(buyIn, this.capacity);
     this.cashOutZones = computeCashOutZones(WORLD_RADIUS);
+
+    if (mode === "online") {
+      // Authoritative server owns the world — local food/snakes are render mirrors only.
+      this.food = new FoodField({ foodCount: 0 });
+      this.player = null;
+      this.running = true;
+      this._last = performance.now();
+      this._acc = 0;
+      this._loop(this._last);
+      return;
+    }
+
     this.food = new FoodField(this.economy);
 
     const birth = this.economy.perSnakeBirth;
@@ -326,19 +341,26 @@ export class Game {
     const frameT0 = performance.now();
     let steps = 0;
     let simMs = 0;
-    while (this._acc >= this._stepMs && steps < 5) {
-      this._syncMouseWorld();
-      const tSim = performance.now();
-      this._update(1);
-      simMs += performance.now() - tSim;
-      this.renderer.follow(this._cameraTarget());
-      this._acc -= this._stepMs;
-      steps++;
-    }
-    if (steps >= 5) this._acc = 0;
 
-    if (steps === 0) this.renderer.follow(this._cameraTarget());
-    this._syncMouseWorld();
+    if (this.mode === "online") {
+      this._syncMouseWorld();
+      this._sendOnlineInput();
+      this.renderer.follow(this._cameraTarget());
+    } else {
+      while (this._acc >= this._stepMs && steps < 5) {
+        this._syncMouseWorld();
+        const tSim = performance.now();
+        this._update(1);
+        simMs += performance.now() - tSim;
+        this.renderer.follow(this._cameraTarget());
+        this._acc -= this._stepMs;
+        steps++;
+      }
+      if (steps >= 5) this._acc = 0;
+      if (steps === 0) this.renderer.follow(this._cameraTarget());
+      this._syncMouseWorld();
+    }
+
     const tRen = performance.now();
     this.renderer.render(this);
     const renderMs = performance.now() - tRen;
@@ -365,6 +387,27 @@ export class Game {
     }
     this._raf = requestAnimationFrame(this._loop);
   };
+
+  /** Send heading + boost only — server owns the sim. */
+  _sendOnlineInput() {
+    const sock = this.onlineSocket;
+    if (!sock || sock.readyState !== 1) return;
+    const angle = Math.atan2(
+      this.mouseWorld.y - (this.player?.head.y ?? this.renderer.cam.y),
+      this.mouseWorld.x - (this.player?.head.x ?? this.renderer.cam.x)
+    );
+    try {
+      sock.send(
+        JSON.stringify({
+          type: "input",
+          angle,
+          boost: Boolean(this.boostHeld),
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 
   _logPerf() {
     const samples = this._perfSamples;

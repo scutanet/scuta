@@ -1,6 +1,8 @@
 import { Game } from "./game.js";
+import { Snake } from "./snake.js";
 import { SKINS, skinByName } from "./skins.js";
 import { neonCoinUrl } from "./food-sprites.js";
+import { applyServerState, serializeSkin } from "./online.js";
 import {
   SERVERS,
   canAffordServer,
@@ -163,13 +165,13 @@ function bestRegionId() {
 }
 
 function formatPing(p) {
-  if (!p || p.latencyMs == null) {
-    if (regionPinging) return { text: "…", cls: "is-pending" };
-    return { text: "—", cls: "is-down" };
+  if (regionPinging && (!p || p.latencyMs == null)) {
+    return { text: "…", cls: "is-pending" };
   }
-  if (!p.ok) return { text: "DOWN", cls: "is-down" };
+  if (!p) return { text: "—", cls: "is-down" };
+  if (!p.ok || p.latencyMs == null) return { text: "DOWN", cls: "is-down" };
   const ms = p.latencyMs;
-  const cls = ms < 80 ? "is-good" : ms < 160 ? "is-ok" : "is-bad";
+  const cls = ms < 100 ? "is-good" : ms < 200 ? "is-ok" : "is-bad";
   return { text: `${ms} ms`, cls };
 }
 
@@ -377,11 +379,12 @@ function disconnectOnline() {
 }
 
 /**
- * Open a WebSocket to the selected region. Resolves with the socket + welcome payload.
+ * Open a WebSocket and complete authoritative join.
  * @param {import("./regions.js").Region} region
+ * @param {{ name: string, skin: any }} identity
  * @param {number} [timeoutMs]
  */
-function connectRegionSocket(region, timeoutMs = 6000) {
+function connectAndJoin(region, identity, timeoutMs = 8000) {
   const url = regionWsUrl(region);
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -402,47 +405,60 @@ function connectRegionSocket(region, timeoutMs = 6000) {
       } catch {
         /* ignore */
       }
-      reject(new Error(`Timed out connecting to ${region.code}`));
+      reject(new Error(`Timed out joining ${region.code}`));
     }, timeoutMs);
 
-    ws.onopen = () => {
-      // Wait briefly for welcome; still resolve if none arrives.
-      const welcomeTimer = setTimeout(() => {
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+
+    ws.onerror = () => fail(new Error(`Cannot reach ${regionDisplayName(region)}`));
+    ws.onclose = () => fail(new Error(`${region.code} closed the connection`));
+
+    ws.onmessage = (ev) => {
+      let msg = null;
+      try {
+        msg = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      if (!msg) return;
+
+      if (msg.type === "hello" || msg.type === "welcome") {
+        // hello = socket ready; send join once
+        if (msg.type === "hello") {
+          try {
+            ws.send(
+              JSON.stringify({
+                type: "join",
+                name: identity.name,
+                skin: serializeSkin(identity.skin),
+              })
+            );
+          } catch (err) {
+            fail(err);
+          }
+          return;
+        }
+        // welcome = spawned in world
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ ws, welcome: null });
-      }, 800);
+        resolve({ ws, welcome: msg });
+        return;
+      }
 
-      ws.onmessage = (ev) => {
-        if (settled) return;
-        let msg = null;
-        try {
-          msg = JSON.parse(String(ev.data));
-        } catch {
-          return;
-        }
-        if (msg?.type === "welcome") {
-          settled = true;
-          clearTimeout(timer);
-          clearTimeout(welcomeTimer);
-          resolve({ ws, welcome: msg });
-        }
-      };
-    };
-
-    ws.onerror = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(`Cannot reach ${regionDisplayName(region)}`));
-    };
-
-    ws.onclose = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(`${region.code} closed the connection`));
+      if (msg.type === "error") {
+        fail(new Error(msg.message || msg.code || "join failed"));
+      }
     };
   });
 }
@@ -466,9 +482,90 @@ function ensurePoolSession() {
   return { ok: true, session: join.session };
 }
 
+function wireOnlineSocket(ws) {
+  onlineSocket = ws;
+  onlineSocket.onmessage = (ev) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(ev.data));
+    } catch {
+      return;
+    }
+    if (!msg) return;
+
+    if (msg.type === "state") {
+      applyServerState(game, msg, Snake);
+      if (game.player?.alive && game.renderer) {
+        // Soft-follow if camera is far from spawn
+        const h = game.player.head;
+        const dx = h.x - game.renderer.cam.x;
+        const dy = h.y - game.renderer.cam.y;
+        if (dx * dx + dy * dy > 90000) {
+          game.renderer.cam.x = h.x;
+          game.renderer.cam.y = h.y;
+        }
+      }
+      return;
+    }
+
+    if (msg.type === "died") {
+      game.stop();
+      disconnectOnline();
+      clearServerSession();
+      refreshServerLabel();
+      hud.classList.add("hidden");
+      menu.classList.remove("hidden");
+      nickInput.focus();
+      showLobbyToast("You died — carried value spilled into the shared arena.");
+      return;
+    }
+
+    if (msg.type === "cashed") {
+      const amount = Number(msg.amount) || 0;
+      game.stop();
+      disconnectOnline();
+      const next = updateDemoBalance(getDemoBalance() + amount);
+      clearServerSession();
+      refreshServerLabel();
+      hud.classList.add("hidden");
+      menu.classList.remove("hidden");
+      nickInput.focus();
+      showLobbyToast(`Cashed out ${formatMoney(amount)}. Wallet: ${formatMoney(next)}.`);
+      return;
+    }
+
+    if (msg.type === "pong") return;
+  };
+
+  onlineSocket.onclose = () => {
+    onlineSocket = null;
+    if (game.running && game.mode === "online") {
+      game.stop();
+      clearServerSession();
+      refreshServerLabel();
+      hud.classList.add("hidden");
+      menu.classList.remove("hidden");
+      showLobbyToast("Disconnected from regional server.");
+    }
+  };
+
+  const beat = setInterval(() => {
+    if (!onlineSocket || onlineSocket.readyState !== WebSocket.OPEN) {
+      clearInterval(beat);
+      return;
+    }
+    try {
+      onlineSocket.send(JSON.stringify({ type: "ping", t: Date.now() }));
+    } catch {
+      clearInterval(beat);
+    }
+  }, 12000);
+  onlineSocket.addEventListener("close", () => clearInterval(beat));
+}
+
 /**
  * @param {"online" | "offline"} mode
- * @param {{ socket?: WebSocket | null }} [opts]
+ * @param {{ socket?: WebSocket | null, welcome?: any }} [opts]
  */
 function launchRound(mode, opts = {}) {
   const join = ensurePoolSession();
@@ -485,44 +582,30 @@ function launchRound(mode, opts = {}) {
   refreshServerLabel();
 
   if (mode === "online" && opts.socket) {
-    onlineSocket = opts.socket;
-    onlineSocket.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data));
-        if (msg?.type === "pong") return;
-      } catch {
-        /* ignore */
-      }
-    };
-    onlineSocket.onclose = () => {
-      onlineSocket = null;
-    };
-    // Keepalive while in-round
-    const beat = setInterval(() => {
-      if (!onlineSocket || onlineSocket.readyState !== WebSocket.OPEN) {
-        clearInterval(beat);
-        return;
-      }
-      try {
-        onlineSocket.send(JSON.stringify({ type: "ping", t: Date.now() }));
-      } catch {
-        clearInterval(beat);
-      }
-    }, 15000);
-    onlineSocket.addEventListener("close", () => clearInterval(beat));
+    wireOnlineSocket(opts.socket);
+    game.start(nick, {
+      skin: getSelectedSkin(),
+      serverSession: { ...join.session },
+      mode: "online",
+      onlineSocket: opts.socket,
+      capacityOverride: 40,
+    });
+    if (opts.welcome?.playerId != null) {
+      game.netPlayerId = opts.welcome.playerId;
+    }
+    return;
   }
 
   game.start(nick, {
     skin: getSelectedSkin(),
     serverSession: { ...join.session },
     mode: "ai",
-    online: mode === "online",
-    regionId: getSelectedRegion().id,
   });
 }
 
 function beginOffline() {
   disconnectOnline();
+  game.stop();
   launchRound("offline");
 }
 
@@ -532,7 +615,6 @@ async function beginOnline() {
   const region = getSelectedRegion();
   const ping = regionPingMap.get(region.id);
   if (ping && !ping.ok) {
-    // Re-measure once before giving up
     await refreshRegionPings({ autoSelect: isRegionAuto() });
   }
   const after = regionPingMap.get(getSelectedRegion().id);
@@ -548,14 +630,19 @@ async function beginOnline() {
 
   try {
     disconnectOnline();
-    const { ws, welcome } = await connectRegionSocket(getSelectedRegion());
+    game.stop();
+    const nick = nickInput.value.trim().slice(0, 16) || "scuta";
+    const { ws, welcome } = await connectAndJoin(getSelectedRegion(), {
+      name: nick,
+      skin: getSelectedSkin(),
+    });
     const players = welcome?.players != null ? Number(welcome.players) : null;
     showLobbyToast(
       players != null
-        ? `Connected to ${regionDisplayName(getSelectedRegion())} · ${players} online`
-        : `Connected to ${regionDisplayName(getSelectedRegion())}`
+        ? `Joined ${regionDisplayName(getSelectedRegion())} · ${players} players in world`
+        : `Joined ${regionDisplayName(getSelectedRegion())} shared world`
     );
-    launchRound("online", { socket: ws });
+    launchRound("online", { socket: ws, welcome });
   } catch (err) {
     disconnectOnline();
     const msg = err instanceof Error ? err.message : "Connection failed";
