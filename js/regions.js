@@ -14,7 +14,9 @@ export const REGION_PREF_KEY = "scuta_region";
  *   name: string,
  *   city: string,
  *   host: string,
+ *   ip?: string,
  *   port: number,
+ *   publicPort?: number,
  *   accent: string,
  * }} Region
  */
@@ -27,7 +29,11 @@ export const REGIONS = Object.freeze([
     name: "North America",
     city: "New York",
     host: "na.scuta.io",
+    /** Public IPv4 until DNS + TLS terminate on the hostname. */
+    ip: "34.204.42.22",
     port: 3001,
+    /** Externally reachable port (SG currently allows 80; 3001 is firewalled). */
+    publicPort: 80,
     accent: "#3d7cff",
   }),
   Object.freeze({
@@ -36,7 +42,9 @@ export const REGIONS = Object.freeze([
     name: "Europe",
     city: "Amsterdam",
     host: "eu.scuta.io",
+    ip: "34.248.252.43",
     port: 3002,
+    publicPort: 80,
     accent: "#26a17b",
   }),
   Object.freeze({
@@ -45,7 +53,9 @@ export const REGIONS = Object.freeze([
     name: "Asia",
     city: "Singapore",
     host: "asia.scuta.io",
+    ip: "13.214.137.6",
     port: 3003,
+    publicPort: 80,
     accent: "#f7931a",
   }),
 ]);
@@ -72,15 +82,20 @@ export function resolveRegion(raw) {
 
 /**
  * Public health URL for a region.
- * Production: https://{host}/health (reverse-proxy → regional port).
- * Overrides (first match wins):
- *   1. window.__SCUTA_REGION_ORIGIN__ = "http://127.0.0.1"
- *   2. Page served from localhost / 127.0.0.1 → http://127.0.0.1:{port}/health
+ * Dev (localhost page): http://127.0.0.1:{port}/health
+ * Prod (until DNS/TLS): http://{ip}:{publicPort}/health  (default publicPort 80)
+ * Later: https://{host}/health
  * @param {Region} region
  */
 export function regionHealthUrl(region) {
   const origin = resolveDevOrigin();
   if (origin) return `${origin}:${region.port}/health`;
+  const pub = region.publicPort ?? 80;
+  if (region.ip) {
+    return pub === 80 || pub === 443
+      ? `http://${region.ip}/health`
+      : `http://${region.ip}:${pub}/health`;
+  }
   return `https://${region.host}/health`;
 }
 
@@ -94,6 +109,12 @@ export function regionWsUrl(region) {
     const u = new URL(origin.includes("://") ? origin : `http://${origin}`);
     const proto = u.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${u.hostname}:${region.port}`;
+  }
+  const pub = region.publicPort ?? 80;
+  if (region.ip) {
+    return pub === 80 || pub === 443
+      ? `ws://${region.ip}`
+      : `ws://${region.ip}:${pub}`;
   }
   return `wss://${region.host}`;
 }
